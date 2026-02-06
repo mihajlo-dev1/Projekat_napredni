@@ -65,3 +65,15 @@ func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []by
 func (w *WAL) Close() error {
 	return w.file.Close()
 }
+
+func Open(path string) (*WAL, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &WAL{
+		file: file,
+	}, nil
+}
