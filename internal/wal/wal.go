@@ -11,17 +11,6 @@ type WAL struct {
 	mu   sync.Mutex
 }
 
-func OpenWAL(path string) (*WAL, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, err
-	}
-
-	return &WAL{
-		file: f,
-	}, nil
-}
-
 func (w *WAL) Append(record *Record) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -76,4 +65,13 @@ func Open(path string) (*WAL, error) {
 	return &WAL{
 		file: file,
 	}, nil
+}
+
+func (w *WAL) AppendDelete(key []byte) error {
+	record := &Record{
+		Type: RecordDelete,
+		Key:  key,
+	}
+
+	return w.Append(record)
 }
