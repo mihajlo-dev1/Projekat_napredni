@@ -11,6 +11,16 @@ type WAL struct {
 	mu   sync.Mutex
 }
 
+func (w *WAL) AppendPut(key []byte, value []byte) error {
+	record := &Record{
+		Type:  RecordPut,
+		Key:   key,
+		Value: value,
+	}
+
+	return w.Append(record)
+}
+
 func (w *WAL) Append(record *Record) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
