@@ -72,9 +72,9 @@ func (hm *HashMap) Delete(key string) bool {
 			if !bucket[i].deleted {
 				bucket[i].deleted = true
 				hm.count--
+				hm.buckets[idx] = bucket
+				return true
 			}
-			hm.buckets[idx] = bucket
-			return true
 		}
 	}
 
