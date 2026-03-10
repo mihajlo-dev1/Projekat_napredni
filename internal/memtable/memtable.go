@@ -6,13 +6,15 @@ type Entry struct {
 }
 
 type Memtable struct {
-	data map[string]Entry
+	data       map[string]Entry
+	maxEntries int
 }
 
 // inicijalizacija prazne memtable
-func New() *Memtable {
+func New(maxEntries int) *Memtable {
 	return &Memtable{
-		data: make(map[string]Entry),
+		data:       make(map[string]Entry),
+		maxEntries: maxEntries,
 	}
 }
 
@@ -39,4 +41,11 @@ func (m *Memtable) Delete(key string) {
 	m.data[key] = Entry{
 		Deleted: true,
 	}
+}
+func (m *Memtable) Size() int {
+	return len(m.data)
+}
+
+func (m *Memtable) IsFull() bool {
+	return m.Size() >= m.maxEntries
 }

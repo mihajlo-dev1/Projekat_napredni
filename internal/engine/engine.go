@@ -17,7 +17,7 @@ func New(walPath string) (*Engine, error) {
 
 	}
 
-	m := memtable.New()
+	m := memtable.New(100)
 
 	return &Engine{
 		wal:      w,
