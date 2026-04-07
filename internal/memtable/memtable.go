@@ -49,3 +49,15 @@ func (m *Memtable) Size() int {
 func (m *Memtable) IsFull() bool {
 	return m.Size() >= m.maxEntries
 }
+
+func (m *Memtable) Entries() map[string]Entry {
+	result := make(map[string]Entry, len(m.data))
+	for key, entry := range m.data {
+		result[key] = entry
+	}
+	return result
+}
+
+func (m *Memtable) Clear() {
+	m.data = make(map[string]Entry)
+}
