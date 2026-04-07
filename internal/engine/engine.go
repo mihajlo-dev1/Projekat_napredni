@@ -44,7 +44,10 @@ func (e *Engine) Put(key string, value []byte) error {
 	e.memtable.Put(key, value)
 
 	if e.memtable.IsFull() {
-		//implementirati naknadno
+		entries := e.memtable.Entries()
+		//dodati kasnije
+		_ = entries
+		e.memtable.Clear()
 	}
 
 	return nil
