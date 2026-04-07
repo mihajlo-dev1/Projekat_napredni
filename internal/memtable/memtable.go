@@ -61,3 +61,11 @@ func (m *Memtable) Entries() map[string]Entry {
 func (m *Memtable) Clear() {
 	m.data = make(map[string]Entry)
 }
+
+func (m *Memtable) IsDeleted(key string) bool {
+	entry, ok := m.data[key]
+	if !ok {
+		return false
+	}
+	return entry.Deleted
+}
