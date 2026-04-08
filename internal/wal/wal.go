@@ -55,33 +55,35 @@ func (w *WAL) Append(record *Record) error {
 	return nil
 }
 
-func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []byte),
-) error {
-	file, err := os.Open(w.file.Name())
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	for {
-		record, err := ReadRecord((file))
-		if err == io.EOF {
-			break
-		}
-
+func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []byte)) error {
+	for _, path := range w.segmentPaths() {
+		file, err := os.Open(path)
 		if err != nil {
 			return err
 		}
 
-		switch record.Type {
-		case RecordPut:
-			applyPut(record.Key, record.Value)
+		for {
+			record, err := ReadRecord(file)
+			if err == io.EOF {
+				break
+			}
 
-		case RecordDelete:
-			applyDelete(record.Key)
+			if err != nil {
+				file.Close()
+				return err
+			}
+
+			switch record.Type {
+			case RecordPut:
+				applyPut(record.Key, record.Value)
+			case RecordDelete:
+				applyDelete(record.Key)
+			}
 		}
 
+		file.Close()
 	}
+
 	return nil
 
 }
@@ -92,10 +94,15 @@ func (w *WAL) Close() error {
 
 func Open(path string) (*WAL, error) {
 	tempWAL := &WAL{
-		dir:                 path,
-		currentSegmentIndex: 1,
+		dir: path,
 	}
-	file, err := tempWAL.openSegment(path)
+
+	tempWAL.currentSegmentIndex = tempWAL.findLastSegmentIndex()
+	if tempWAL.currentSegmentIndex == 0 {
+		tempWAL.currentSegmentIndex = 1
+	}
+
+	file, err := tempWAL.openSegment(tempWAL.currentSegmentPath())
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +114,19 @@ func Open(path string) (*WAL, error) {
 		currentRecordCount:   0,
 		maxRecordsPerSegment: 3,
 	}, nil
+}
+
+// kako bi segmentirani wal znao gde je stao
+func (w *WAL) findLastSegmentIndex() int {
+	index := 1
+	for {
+		path := fmt.Sprintf("%s_%04d.log", w.dir, index)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			break
+		}
+		index++
+	}
+	return index - 1
 }
 
 func (w *WAL) AppendDelete(key []byte) error {
@@ -130,4 +150,13 @@ func (w *WAL) currentSegmentPath() string {
 	return fmt.Sprintf("%s_%04d.log", w.dir, w.currentSegmentIndex)
 	//da path bude wal_0001.log, wal_002.log...
 
+}
+func (w *WAL) segmentPaths() []string {
+	paths := make([]string, 0, w.currentSegmentIndex)
+
+	for i := 1; i <= w.currentSegmentIndex; i++ {
+		paths = append(paths, fmt.Sprintf("%s_%04d.log", w.dir, i))
+	}
+
+	return paths
 }
