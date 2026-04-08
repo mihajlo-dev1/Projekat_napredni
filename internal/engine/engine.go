@@ -65,3 +65,7 @@ func (e *Engine) Delete(key string) error {
 func (e *Engine) Get(key string) ([]byte, bool) {
 	return e.memtable.Get(key)
 }
+
+func (e *Engine) Close() error {
+	return e.wal.Close()
+}
