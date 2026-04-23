@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"kv-engine/internal"
 )
 
 type WAL struct {
@@ -17,8 +19,8 @@ type WAL struct {
 }
 
 func (w *WAL) AppendPut(key []byte, value []byte) error {
-	record := &Record{
-		Type:  RecordPut,
+	record := &internal.Record{
+		Type:  internal.RecordPut,
 		Key:   key,
 		Value: value,
 	}
@@ -26,11 +28,11 @@ func (w *WAL) AppendPut(key []byte, value []byte) error {
 	return w.Append(record)
 }
 
-func (w *WAL) Append(record *Record) error {
+func (w *WAL) Append(record *internal.Record) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	data := record.Serialize()
+	data := SerializeRecord(record)
 	_, err := w.file.Write(data)
 	if err != nil {
 		return err
@@ -74,9 +76,9 @@ func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []by
 			}
 
 			switch record.Type {
-			case RecordPut:
+			case internal.RecordPut:
 				applyPut(record.Key, record.Value)
-			case RecordDelete:
+			case internal.RecordDelete:
 				applyDelete(record.Key)
 			}
 		}
@@ -130,8 +132,8 @@ func (w *WAL) findLastSegmentIndex() int {
 }
 
 func (w *WAL) AppendDelete(key []byte) error {
-	record := &Record{
-		Type: RecordDelete,
+	record := &internal.Record{
+		Type: internal.RecordDelete,
 		Key:  key,
 	}
 
