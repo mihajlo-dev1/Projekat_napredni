@@ -123,21 +123,22 @@ func (s *SkipList) Delete(key string) bool {
 	return false
 }
 
-func (s *SkipList) Entries() map[string]internal.MemtableEntry {
-	result := make(map[string]internal.MemtableEntry, s.size)
+func (s *SkipList) Entries() []internal.MemtableEntry {
+	entries := make([]internal.MemtableEntry, 0, s.size)
 	current := s.head.forward[0]
 
 	for current != nil {
 		entry := internal.MemtableEntry{
+			Key:     current.key,
 			Deleted: current.deleted,
 		}
 		if current.value != nil {
 			entry.Value = append([]byte(nil), current.value...)
 		}
 
-		result[current.key] = entry
+		entries = append(entries, entry)
 		current = current.forward[0]
 	}
 
-	return result
+	return entries
 }

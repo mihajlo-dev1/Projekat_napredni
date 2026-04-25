@@ -16,6 +16,7 @@ type Record struct {
 }
 
 type MemtableEntry struct {
+	Key     string
 	Value   []byte
 	Deleted bool
 }
@@ -32,7 +33,7 @@ type Memtable interface {
 	Get(key string) ([]byte, bool)
 	Delete(key string)
 	IsFull() bool
-	Entries() map[string]MemtableEntry
+	Entries() []MemtableEntry
 	Clear()
 }
 

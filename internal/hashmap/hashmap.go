@@ -2,53 +2,148 @@ package hashmap
 
 import "kv-engine/internal"
 
+const (
+	defaultBucketCount = 16
+	maxLoadFactor      = 0.75
+)
+
+type Node struct {
+	key     string
+	value   []byte
+	deleted bool
+	next    *Node
+}
+
 type HashMap struct {
-	data map[string]internal.MemtableEntry
+	buckets []*Node
+	size    int
 }
 
 func New() *HashMap {
 	return &HashMap{
-		data: make(map[string]internal.MemtableEntry),
+		buckets: make([]*Node, defaultBucketCount),
+	}
+}
+
+func (h *HashMap) bucketIndex(key string) int {
+	hash := 0
+
+	for i := 0; i < len(key); i++ {
+		hash = hash*31 + int(key[i])
+	}
+
+	return hash % len(h.buckets)
+}
+
+func (h *HashMap) resize() {
+	oldBuckets := h.buckets
+	h.buckets = make([]*Node, len(oldBuckets)*2)
+
+	for _, bucket := range oldBuckets {
+		for current := bucket; current != nil; current = current.next {
+			index := h.bucketIndex(current.key)
+			newNode := &Node{
+				key:     current.key,
+				value:   append([]byte(nil), current.value...),
+				deleted: current.deleted,
+			}
+
+			if h.buckets[index] == nil {
+				h.buckets[index] = newNode
+				continue
+			}
+
+			last := h.buckets[index]
+			for last.next != nil {
+				last = last.next
+			}
+			last.next = newNode
+		}
 	}
 }
 
 func (h *HashMap) Put(key string, value []byte) {
-	h.data[key] = internal.MemtableEntry{
-		Value:   append([]byte(nil), value...),
-		Deleted: false,
+	index := h.bucketIndex(key)
+	current := h.buckets[index]
+
+	for current != nil {
+		if current.key == key {
+			current.value = append([]byte(nil), value...)
+			current.deleted = false
+			return
+		}
+		current = current.next
+	}
+
+	newNode := &Node{
+		key:     key,
+		value:   append([]byte(nil), value...),
+		deleted: false,
+		next:    h.buckets[index],
+	}
+
+	h.buckets[index] = newNode
+	h.size++
+
+	if float64(h.size)/float64(len(h.buckets)) > maxLoadFactor {
+		h.resize()
 	}
 }
 
 func (h *HashMap) Get(key string) ([]byte, bool) {
-	entry, ok := h.data[key]
-	if !ok || entry.Deleted {
-		return nil, false
+	index := h.bucketIndex(key)
+	current := h.buckets[index]
+
+	for current != nil {
+		if current.key == key {
+			if current.deleted {
+				return nil, false
+			}
+			return append([]byte(nil), current.value...), true
+		}
+		current = current.next
 	}
-	return append([]byte(nil), entry.Value...), true
+
+	return nil, false
 }
 
 func (h *HashMap) Delete(key string) bool {
-	entry, ok := h.data[key]
-	if !ok {
-		return false
+	index := h.bucketIndex(key)
+	current := h.buckets[index]
+
+	for current != nil {
+		if current.key == key {
+			if current.deleted {
+				return false
+			}
+			current.deleted = true
+			current.value = nil
+			return true
+		}
+		current = current.next
 	}
 
-	entry.Deleted = true
-	entry.Value = nil
-	h.data[key] = entry
-	return true
+	return false
 }
 
-func (h *HashMap) Entries() map[string]internal.MemtableEntry {
-	result := make(map[string]internal.MemtableEntry, len(h.data))
-	for key, entry := range h.data {
-		cloned := internal.MemtableEntry{
-			Deleted: entry.Deleted,
+func (h *HashMap) Entries() []internal.MemtableEntry {
+	entries := make([]internal.MemtableEntry, 0, h.size)
+
+	for _, bucket := range h.buckets {
+		current := bucket
+		for current != nil {
+			entry := internal.MemtableEntry{
+				Key:     current.key,
+				Deleted: current.deleted,
+			}
+			if current.value != nil {
+				entry.Value = append([]byte(nil), current.value...)
+			}
+
+			entries = append(entries, entry)
+			current = current.next
 		}
-		if entry.Value != nil {
-			cloned.Value = append([]byte(nil), entry.Value...)
-		}
-		result[key] = cloned
 	}
-	return result
+
+	return entries
 }

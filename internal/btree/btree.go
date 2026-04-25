@@ -196,32 +196,33 @@ func (t *BTree) Delete(key string) bool {
 	return false
 }
 
-func (t *BTree) Entries() map[string]internal.MemtableEntry {
-	result := make(map[string]internal.MemtableEntry, t.size)
-	collectEntries(t.head, result)
-	return result
+func (t *BTree) Entries() []internal.MemtableEntry {
+	entries := make([]internal.MemtableEntry, 0, t.size)
+	collectEntries(t.head, &entries)
+	return entries
 }
 
-func collectEntries(node *Node, result map[string]internal.MemtableEntry) {
+func collectEntries(node *Node, entries *[]internal.MemtableEntry) {
 	if node == nil {
 		return
 	}
 
 	for index, key := range node.keys {
 		if !node.leaf {
-			collectEntries(node.children[index], result)
+			collectEntries(node.children[index], entries)
 		}
 
 		entry := internal.MemtableEntry{
+			Key:     key,
 			Deleted: node.deleted[index],
 		}
 		if node.values[index] != nil {
 			entry.Value = append([]byte(nil), node.values[index]...)
 		}
-		result[key] = entry
+		*entries = append(*entries, entry)
 	}
 
 	if !node.leaf {
-		collectEntries(node.children[len(node.keys)], result)
+		collectEntries(node.children[len(node.keys)], entries)
 	}
 }
