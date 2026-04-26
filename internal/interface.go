@@ -31,7 +31,7 @@ type WAL interface {
 type Memtable interface {
 	Put(key string, value []byte)
 	Get(key string) ([]byte, bool)
-	Delete(key string)
+	Delete(key string) bool
 	IsFull() bool
 	Entries() []MemtableEntry
 	Clear()

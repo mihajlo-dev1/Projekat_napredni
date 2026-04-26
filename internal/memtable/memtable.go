@@ -44,8 +44,8 @@ func (m *Memtable) Get(key string) ([]byte, bool) {
 	return m.backend.Get(key)
 }
 
-func (m *Memtable) Delete(key string) {
-	m.backend.Delete(key)
+func (m *Memtable) Delete(key string) bool {
+	return m.backend.Delete(key)
 }
 
 func (m *Memtable) Size() int {
