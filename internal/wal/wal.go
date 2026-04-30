@@ -1,11 +1,16 @@
 package wal
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sync"
 )
+
+const blockSize = 32 * 1024
+
+var ErrRecordTooLarge = errors.New("record too large")
 
 type WAL struct {
 	file                 *os.File
@@ -14,6 +19,7 @@ type WAL struct {
 	currentSegmentIndex  int
 	currentRecordCount   int
 	maxRecordsPerSegment int
+	currentBlockOffSet   int
 }
 
 func (w *WAL) AppendPut(key []byte, value []byte) error {
@@ -31,15 +37,56 @@ func (w *WAL) Append(record *Record) error {
 	defer w.mu.Unlock()
 
 	data := record.Serialize()
-	_, err := w.file.Write(data)
-	if err != nil {
-		return err
+
+	remaining := data
+
+	for len(remaining) > 0 {
+		space := w.remainingBlockSpace()
+
+		if space == 0 {
+			if err := w.padBlock(); err != nil {
+				return err
+			}
+			space = w.remainingBlockSpace()
+		}
+
+		chunkSize := space - 1 // 1 bajt čuvamo za fragment type
+		if len(remaining) < chunkSize {
+			chunkSize = len(remaining)
+		}
+
+		chunk := remaining[:chunkSize]
+		remaining = remaining[chunkSize:]
+
+		var fragmentType RecordType
+
+		if len(data) == len(chunk) {
+			fragmentType = RecordFull
+		} else if len(remaining) == 0 {
+			fragmentType = RecordLast
+		} else if len(data) == len(chunk)+len(remaining) {
+			fragmentType = RecordFirst
+		} else {
+			fragmentType = RecordMiddle
+		}
+
+		if _, err := w.file.Write([]byte{byte(fragmentType)}); err != nil {
+			return err
+		}
+
+		if _, err := w.file.Write(chunk); err != nil {
+			return err
+		}
+
+		w.currentBlockOffSet += 1 + len(chunk)
 	}
 
 	w.currentRecordCount++
+
 	if w.isSegmentFull() {
 		w.currentSegmentIndex++
 		w.currentRecordCount = 0
+		w.currentBlockOffSet = 0
 
 		if err := w.file.Close(); err != nil {
 			return err
@@ -52,9 +99,9 @@ func (w *WAL) Append(record *Record) error {
 
 		w.file = newFile
 	}
+
 	return nil
 }
-
 func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []byte)) error {
 	for _, path := range w.segmentPaths() {
 		file, err := os.Open(path)
@@ -113,6 +160,7 @@ func Open(path string) (*WAL, error) {
 		currentSegmentIndex:  1,
 		currentRecordCount:   0,
 		maxRecordsPerSegment: 3,
+		currentBlockOffSet:   0,
 	}, nil
 }
 
@@ -129,6 +177,25 @@ func (w *WAL) findLastSegmentIndex() int {
 	return index - 1
 }
 
+func (w *WAL) remainingBlockSpace() int {
+	return blockSize - w.currentBlockOffSet
+}
+
+func (w *WAL) padBlock() error {
+	remaining := w.remainingBlockSpace()
+	if remaining == blockSize {
+		return nil
+	}
+
+	padding := make([]byte, remaining)
+	if _, err := w.file.Write(padding); err != nil {
+		return err
+	}
+
+	w.currentBlockOffSet = 0
+	return nil
+
+}
 func (w *WAL) AppendDelete(key []byte) error {
 	record := &Record{
 		Type: RecordDelete,

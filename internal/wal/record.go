@@ -14,6 +14,13 @@ const (
 	RecordDelete
 )
 
+const (
+	RecordFull   RecordType = 10
+	RecordFirst  RecordType = 11
+	RecordMiddle RecordType = 12
+	RecordLast   RecordType = 13
+)
+
 type Record struct {
 	Type  RecordType
 	Key   []byte
