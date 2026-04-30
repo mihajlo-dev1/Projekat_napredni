@@ -6,8 +6,10 @@ import (
 )
 
 type Engine struct {
-	wal      *wal.WAL
-	memtable *memtable.Memtable
+	wal          *wal.WAL
+	memtables    []*memtable.Memtable
+	activeMem    *memtable.Memtable
+	maxMemtables int
 }
 
 func New(walPath string) (*Engine, error) {
@@ -20,18 +22,20 @@ func New(walPath string) (*Engine, error) {
 	m := memtable.New(100)
 
 	return &Engine{
-		wal:      w,
-		memtable: m,
+		wal:          w,
+		memtables:    []*memtable.Memtable{m},
+		activeMem:    m,
+		maxMemtables: 3,
 	}, nil
 }
 
 func (e *Engine) Start() error {
 	return e.wal.Replay(
 		func(key []byte, value []byte) {
-			e.memtable.Put(string(key), value)
+			e.activeMem.Put(string(key), value)
 		},
 		func(key []byte) {
-			e.memtable.Delete(string(key))
+			e.activeMem.Delete(string(key))
 		},
 	)
 }
@@ -41,13 +45,22 @@ func (e *Engine) Put(key string, value []byte) error {
 		return err
 	}
 
-	e.memtable.Put(key, value)
+	e.activeMem.Put(key, value)
 
-	if e.memtable.IsFull() {
-		entries := e.memtable.Entries()
-		//dodati kasnije
-		_ = entries
-		e.memtable.Clear()
+	if e.activeMem.IsFull() {
+
+		if len(e.memtables) < e.maxMemtables {
+			newMem := memtable.New(100)
+			e.memtables = append(e.memtables, newMem)
+			e.activeMem = newMem
+		} else {
+
+			e.memtables = e.memtables[1:]
+
+			newMem := memtable.New(100)
+			e.memtables = append(e.memtables, newMem)
+			e.activeMem = newMem
+		}
 	}
 
 	return nil
@@ -57,13 +70,32 @@ func (e *Engine) Delete(key string) error {
 	if err := e.wal.AppendDelete([]byte(key)); err != nil {
 		return err
 	}
-	e.memtable.Delete(key)
+	e.activeMem.Delete(key)
+	if e.activeMem.IsFull() {
+
+		if len(e.memtables) < e.maxMemtables {
+			newMem := memtable.New(100)
+			e.memtables = append(e.memtables, newMem)
+			e.activeMem = newMem
+		} else {
+			e.memtables = e.memtables[1:]
+
+			newMem := memtable.New(100)
+			e.memtables = append(e.memtables, newMem)
+			e.activeMem = newMem
+		}
+	}
 	return nil
 
 }
 
 func (e *Engine) Get(key string) ([]byte, bool) {
-	return e.memtable.Get(key)
+	for i := len(e.memtables) - 1; i >= 0; i-- {
+		if val, ok := e.memtables[i].Get(key); ok {
+			return val, true
+		}
+	}
+	return nil, false
 }
 
 func (e *Engine) Close() error {
