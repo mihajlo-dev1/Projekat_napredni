@@ -11,6 +11,8 @@ import (
 )
 
 const blockSize = 32 * 1024
+const frameHeaderSize = 5
+const defaultMaxRecordsPerSegment = 3
 
 var ErrRecordTooLarge = errors.New("record too large")
 
@@ -45,14 +47,14 @@ func (w *WAL) Append(record *internal.Record) error {
 	for len(remaining) > 0 {
 		space := w.remainingBlockSpace()
 
-		if space <= 1 {
+		if space < frameHeaderSize {
 			if err := w.padBlock(); err != nil {
 				return err
 			}
 			space = w.remainingBlockSpace()
 		}
 
-		chunkSize := space - 1 // 1 byte za fragment type
+		chunkSize := space - frameHeaderSize
 		if len(remaining) < chunkSize {
 			chunkSize = len(remaining)
 		}
@@ -72,15 +74,12 @@ func (w *WAL) Append(record *internal.Record) error {
 			fragmentType = RecordMiddle
 		}
 
-		if _, err := w.file.Write([]byte{byte(fragmentType)}); err != nil {
+		written, err := writeFrame(w.file, fragmentType, chunk)
+		if err != nil {
 			return err
 		}
 
-		if _, err := w.file.Write(chunk); err != nil {
-			return err
-		}
-
-		w.currentBlockOffset += 1 + len(chunk)
+		w.currentBlockOffset += written
 	}
 
 	w.currentRecordCount++
@@ -112,8 +111,9 @@ func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []by
 			return err
 		}
 
+		reader := newFrameReader(file)
 		for {
-			record, err := ReadRecord(file)
+			record, err := ReadNextRecord(reader)
 			if err == io.EOF {
 				break
 			}
@@ -143,12 +143,26 @@ func (w *WAL) Close() error {
 
 func Open(path string) (*WAL, error) {
 	tempWAL := &WAL{
-		dir: path,
+		dir:                  path,
+		maxRecordsPerSegment: defaultMaxRecordsPerSegment,
 	}
 
 	tempWAL.currentSegmentIndex = tempWAL.findLastSegmentIndex()
 	if tempWAL.currentSegmentIndex == 0 {
 		tempWAL.currentSegmentIndex = 1
+	} else {
+		recordCount, blockOffset, err := scanSegmentState(tempWAL.currentSegmentPath())
+		if err != nil {
+			return nil, err
+		}
+
+		tempWAL.currentRecordCount = recordCount
+		tempWAL.currentBlockOffset = blockOffset
+		if tempWAL.isSegmentFull() {
+			tempWAL.currentSegmentIndex++
+			tempWAL.currentRecordCount = 0
+			tempWAL.currentBlockOffset = 0
+		}
 	}
 
 	file, err := tempWAL.openSegment(tempWAL.currentSegmentPath())
@@ -160,10 +174,31 @@ func Open(path string) (*WAL, error) {
 		file:                 file,
 		dir:                  path,
 		currentSegmentIndex:  tempWAL.currentSegmentIndex,
-		currentRecordCount:   0,
-		maxRecordsPerSegment: 3,
-		currentBlockOffset:   0,
+		currentRecordCount:   tempWAL.currentRecordCount,
+		maxRecordsPerSegment: defaultMaxRecordsPerSegment,
+		currentBlockOffset:   tempWAL.currentBlockOffset,
 	}, nil
+}
+
+func scanSegmentState(path string) (int, int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+
+	reader := newFrameReader(file)
+	recordCount := 0
+
+	for {
+		if _, err := ReadNextRecord(reader); err != nil {
+			if err == io.EOF {
+				return recordCount, reader.blockOffset, nil
+			}
+			return 0, 0, err
+		}
+		recordCount++
+	}
 }
 
 func (w *WAL) findLastSegmentIndex() int {
