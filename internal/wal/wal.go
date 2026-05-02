@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"kv-engine/internal"
 )
 
 const blockSize = 32 * 1024
@@ -19,12 +21,12 @@ type WAL struct {
 	currentSegmentIndex  int
 	currentRecordCount   int
 	maxRecordsPerSegment int
-	currentBlockOffSet   int
+	currentBlockOffset   int
 }
 
 func (w *WAL) AppendPut(key []byte, value []byte) error {
-	record := &Record{
-		Type:  RecordPut,
+	record := &internal.Record{
+		Type:  internal.RecordPut,
 		Key:   key,
 		Value: value,
 	}
@@ -32,25 +34,25 @@ func (w *WAL) AppendPut(key []byte, value []byte) error {
 	return w.Append(record)
 }
 
-func (w *WAL) Append(record *Record) error {
+func (w *WAL) Append(record *internal.Record) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	data := record.Serialize()
+	data := SerializeRecord(record)
 
 	remaining := data
 
 	for len(remaining) > 0 {
 		space := w.remainingBlockSpace()
 
-		if space == 0 {
+		if space <= 1 {
 			if err := w.padBlock(); err != nil {
 				return err
 			}
 			space = w.remainingBlockSpace()
 		}
 
-		chunkSize := space - 1 // 1 bajt čuvamo za fragment type
+		chunkSize := space - 1 // 1 byte za fragment type
 		if len(remaining) < chunkSize {
 			chunkSize = len(remaining)
 		}
@@ -58,7 +60,7 @@ func (w *WAL) Append(record *Record) error {
 		chunk := remaining[:chunkSize]
 		remaining = remaining[chunkSize:]
 
-		var fragmentType RecordType
+		var fragmentType internal.RecordType
 
 		if len(data) == len(chunk) {
 			fragmentType = RecordFull
@@ -78,7 +80,7 @@ func (w *WAL) Append(record *Record) error {
 			return err
 		}
 
-		w.currentBlockOffSet += 1 + len(chunk)
+		w.currentBlockOffset += 1 + len(chunk)
 	}
 
 	w.currentRecordCount++
@@ -86,7 +88,7 @@ func (w *WAL) Append(record *Record) error {
 	if w.isSegmentFull() {
 		w.currentSegmentIndex++
 		w.currentRecordCount = 0
-		w.currentBlockOffSet = 0
+		w.currentBlockOffset = 0
 
 		if err := w.file.Close(); err != nil {
 			return err
@@ -102,6 +104,7 @@ func (w *WAL) Append(record *Record) error {
 
 	return nil
 }
+
 func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []byte)) error {
 	for _, path := range w.segmentPaths() {
 		file, err := os.Open(path)
@@ -121,9 +124,9 @@ func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []by
 			}
 
 			switch record.Type {
-			case RecordPut:
+			case internal.RecordPut:
 				applyPut(record.Key, record.Value)
-			case RecordDelete:
+			case internal.RecordDelete:
 				applyDelete(record.Key)
 			}
 		}
@@ -132,7 +135,6 @@ func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []by
 	}
 
 	return nil
-
 }
 
 func (w *WAL) Close() error {
@@ -157,16 +159,16 @@ func Open(path string) (*WAL, error) {
 	return &WAL{
 		file:                 file,
 		dir:                  path,
-		currentSegmentIndex:  1,
+		currentSegmentIndex:  tempWAL.currentSegmentIndex,
 		currentRecordCount:   0,
 		maxRecordsPerSegment: 3,
-		currentBlockOffSet:   0,
+		currentBlockOffset:   0,
 	}, nil
 }
 
-// kako bi segmentirani wal znao gde je stao
 func (w *WAL) findLastSegmentIndex() int {
 	index := 1
+
 	for {
 		path := fmt.Sprintf("%s_%04d.log", w.dir, index)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -174,11 +176,12 @@ func (w *WAL) findLastSegmentIndex() int {
 		}
 		index++
 	}
+
 	return index - 1
 }
 
 func (w *WAL) remainingBlockSpace() int {
-	return blockSize - w.currentBlockOffSet
+	return blockSize - w.currentBlockOffset
 }
 
 func (w *WAL) padBlock() error {
@@ -192,13 +195,13 @@ func (w *WAL) padBlock() error {
 		return err
 	}
 
-	w.currentBlockOffSet = 0
+	w.currentBlockOffset = 0
 	return nil
-
 }
+
 func (w *WAL) AppendDelete(key []byte) error {
-	record := &Record{
-		Type: RecordDelete,
+	record := &internal.Record{
+		Type: internal.RecordDelete,
 		Key:  key,
 	}
 
@@ -215,9 +218,8 @@ func (w *WAL) openSegment(path string) (*os.File, error) {
 
 func (w *WAL) currentSegmentPath() string {
 	return fmt.Sprintf("%s_%04d.log", w.dir, w.currentSegmentIndex)
-	//da path bude wal_0001.log, wal_002.log...
-
 }
+
 func (w *WAL) segmentPaths() []string {
 	paths := make([]string, 0, w.currentSegmentIndex)
 

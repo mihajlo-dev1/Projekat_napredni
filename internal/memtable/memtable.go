@@ -1,49 +1,51 @@
 package memtable
 
-type Entry struct {
-	Value   []byte
-	Deleted bool
-}
+import "kv-engine/internal"
+
+type Entry = internal.MemtableEntry
 
 type Memtable struct {
-	data       map[string]Entry
-	maxEntries int
+	backend     backend
+	backendName string
+	maxEntries  int
 }
 
 // inicijalizacija prazne memtable
 func New(maxEntries int) *Memtable {
-	return &Memtable{
-		data:       make(map[string]Entry),
-		maxEntries: maxEntries,
+	memtable, err := NewWithBackend("hashmap", maxEntries)
+	if err != nil {
+		panic(err)
 	}
+	return memtable
+}
+
+func NewWithBackend(implementation string, maxEntries int) (*Memtable, error) {
+	storage, err := newBackend(implementation)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Memtable{
+		backend:     storage,
+		backendName: implementation,
+		maxEntries:  maxEntries,
+	}, nil
 }
 
 func (m *Memtable) Put(key string, value []byte) {
-	m.data[key] = Entry{
-		Value:   value,
-		Deleted: false,
-	}
+	m.backend.Put(key, value)
 }
 
 func (m *Memtable) Get(key string) ([]byte, bool) {
-	entry, ok := m.data[key]
-	if !ok {
-		return nil, false
-	}
-
-	if entry.Deleted {
-		return nil, false
-	}
-
-	return entry.Value, true
+	return m.backend.Get(key)
 }
+
 func (m *Memtable) Delete(key string) {
-	m.data[key] = Entry{
-		Deleted: true,
-	}
+	m.backend.Delete(key)
 }
+
 func (m *Memtable) Size() int {
-	return len(m.data)
+	return len(m.backend.Entries())
 }
 
 func (m *Memtable) IsFull() bool {
@@ -51,19 +53,15 @@ func (m *Memtable) IsFull() bool {
 }
 
 func (m *Memtable) Entries() map[string]Entry {
-	result := make(map[string]Entry, len(m.data))
-	for key, entry := range m.data {
-		result[key] = entry
-	}
-	return result
+	return m.backend.Entries()
 }
 
 func (m *Memtable) Clear() {
-	m.data = make(map[string]Entry)
+	m.backend = resetBackend(m.backendName)
 }
 
 func (m *Memtable) IsDeleted(key string) bool {
-	entry, ok := m.data[key]
+	entry, ok := m.backend.Entries()[key]
 	if !ok {
 		return false
 	}
