@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,10 @@ import (
 	"kv-engine/internal"
 )
 
+const blockSize = 32 * 1024
+
+var ErrRecordTooLarge = errors.New("record too large")
+
 type WAL struct {
 	file                 *os.File
 	mu                   sync.Mutex
@@ -16,6 +21,7 @@ type WAL struct {
 	currentSegmentIndex  int
 	currentRecordCount   int
 	maxRecordsPerSegment int
+	currentBlockOffset   int
 }
 
 func (w *WAL) AppendPut(key []byte, value []byte) error {
@@ -33,15 +39,56 @@ func (w *WAL) Append(record *internal.Record) error {
 	defer w.mu.Unlock()
 
 	data := SerializeRecord(record)
-	_, err := w.file.Write(data)
-	if err != nil {
-		return err
+
+	remaining := data
+
+	for len(remaining) > 0 {
+		space := w.remainingBlockSpace()
+
+		if space <= 1 {
+			if err := w.padBlock(); err != nil {
+				return err
+			}
+			space = w.remainingBlockSpace()
+		}
+
+		chunkSize := space - 1 // 1 byte za fragment type
+		if len(remaining) < chunkSize {
+			chunkSize = len(remaining)
+		}
+
+		chunk := remaining[:chunkSize]
+		remaining = remaining[chunkSize:]
+
+		var fragmentType internal.RecordType
+
+		if len(data) == len(chunk) {
+			fragmentType = RecordFull
+		} else if len(remaining) == 0 {
+			fragmentType = RecordLast
+		} else if len(data) == len(chunk)+len(remaining) {
+			fragmentType = RecordFirst
+		} else {
+			fragmentType = RecordMiddle
+		}
+
+		if _, err := w.file.Write([]byte{byte(fragmentType)}); err != nil {
+			return err
+		}
+
+		if _, err := w.file.Write(chunk); err != nil {
+			return err
+		}
+
+		w.currentBlockOffset += 1 + len(chunk)
 	}
 
 	w.currentRecordCount++
+
 	if w.isSegmentFull() {
 		w.currentSegmentIndex++
 		w.currentRecordCount = 0
+		w.currentBlockOffset = 0
 
 		if err := w.file.Close(); err != nil {
 			return err
@@ -54,6 +101,7 @@ func (w *WAL) Append(record *internal.Record) error {
 
 		w.file = newFile
 	}
+
 	return nil
 }
 
@@ -87,7 +135,6 @@ func (w *WAL) Replay(applyPut func(key, value []byte), applyDelete func(key []by
 	}
 
 	return nil
-
 }
 
 func (w *WAL) Close() error {
@@ -112,15 +159,16 @@ func Open(path string) (*WAL, error) {
 	return &WAL{
 		file:                 file,
 		dir:                  path,
-		currentSegmentIndex:  1,
+		currentSegmentIndex:  tempWAL.currentSegmentIndex,
 		currentRecordCount:   0,
 		maxRecordsPerSegment: 3,
+		currentBlockOffset:   0,
 	}, nil
 }
 
-// kako bi segmentirani wal znao gde je stao
 func (w *WAL) findLastSegmentIndex() int {
 	index := 1
+
 	for {
 		path := fmt.Sprintf("%s_%04d.log", w.dir, index)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -128,7 +176,27 @@ func (w *WAL) findLastSegmentIndex() int {
 		}
 		index++
 	}
+
 	return index - 1
+}
+
+func (w *WAL) remainingBlockSpace() int {
+	return blockSize - w.currentBlockOffset
+}
+
+func (w *WAL) padBlock() error {
+	remaining := w.remainingBlockSpace()
+	if remaining == blockSize {
+		return nil
+	}
+
+	padding := make([]byte, remaining)
+	if _, err := w.file.Write(padding); err != nil {
+		return err
+	}
+
+	w.currentBlockOffset = 0
+	return nil
 }
 
 func (w *WAL) AppendDelete(key []byte) error {
@@ -150,9 +218,8 @@ func (w *WAL) openSegment(path string) (*os.File, error) {
 
 func (w *WAL) currentSegmentPath() string {
 	return fmt.Sprintf("%s_%04d.log", w.dir, w.currentSegmentIndex)
-	//da path bude wal_0001.log, wal_002.log...
-
 }
+
 func (w *WAL) segmentPaths() []string {
 	paths := make([]string, 0, w.currentSegmentIndex)
 

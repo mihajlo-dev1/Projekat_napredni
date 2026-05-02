@@ -9,6 +9,13 @@ import (
 	"kv-engine/internal"
 )
 
+const (
+	RecordFull   internal.RecordType = 10
+	RecordFirst  internal.RecordType = 11
+	RecordMiddle internal.RecordType = 12
+	RecordLast   internal.RecordType = 13
+)
+
 func SerializeRecord(record *internal.Record) []byte {
 	keySize := uint32(len(record.Key))
 	valueSize := uint32(len(record.Value))
