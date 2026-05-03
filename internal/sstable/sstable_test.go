@@ -151,6 +151,52 @@ func TestGetReadsThroughSSTableComponents(t *testing.T) {
 	}
 }
 
+func TestValidateMerkleDetectsChangedDataRecord(t *testing.T) {
+	dir := t.TempDir()
+	entries := map[string][]byte{
+		"alpha": []byte("one"),
+		"bravo": []byte("two"),
+		"delta": []byte("four"),
+	}
+
+	table, _, index, err := Create(dir, entries, 2)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	valid, changed, err := table.ValidateMerkle()
+	if err != nil {
+		t.Fatalf("ValidateMerkle() error = %v", err)
+	}
+	if !valid || len(changed) != 0 {
+		t.Fatalf("ValidateMerkle() = (%v, %v), want (true, nil)", valid, changed)
+	}
+
+	valueOffset := index[1].Offset + int64(8+len(index[1].Key))
+	file, err := os.OpenFile(table.DataPath, os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("OpenFile(data) error = %v", err)
+	}
+	if _, err := file.WriteAt([]byte("X"), valueOffset); err != nil {
+		file.Close()
+		t.Fatalf("WriteAt(data) error = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close(data) error = %v", err)
+	}
+
+	valid, changed, err = table.ValidateMerkle()
+	if err != nil {
+		t.Fatalf("ValidateMerkle() after change error = %v", err)
+	}
+	if valid {
+		t.Fatalf("ValidateMerkle() valid = true, want false")
+	}
+	if !reflect.DeepEqual(changed, []int{1}) {
+		t.Fatalf("ValidateMerkle() changed = %v, want [1]", changed)
+	}
+}
+
 func readIndexFile(path string) ([]IndexEntry, error) {
 	file, err := os.Open(path)
 	if err != nil {

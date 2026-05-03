@@ -146,6 +146,27 @@ func (s *SSTable) Get(key string) ([]byte, bool) {
 	return entry.Value, true
 }
 
+func (s *SSTable) ValidateMerkle() (bool, []int, error) {
+	records, err := readDataRecords(s.DataPath)
+	if err != nil {
+		return false, nil, err
+	}
+
+	metadataFile, err := os.Open(s.MetadataPath)
+	if err != nil {
+		return false, nil, err
+	}
+	defer metadataFile.Close()
+
+	tree, err := DeserializeMerkleTree(metadataFile)
+	if err != nil {
+		return false, nil, err
+	}
+
+	changed := tree.Validate(records)
+	return len(changed) == 0, changed, nil
+}
+
 func (s *SSTable) writeData(entries map[string][]byte) (*bloom.Filter, []IndexEntry, [][]byte, error) {
 	return write(s.DataPath, entries)
 }
@@ -242,6 +263,26 @@ func readSummary(r io.Reader) ([]SumaryEntry, error) {
 			return nil, err
 		}
 		summary = append(summary, entry)
+	}
+}
+
+func readDataRecords(path string) ([][]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	records := make([][]byte, 0)
+	for {
+		entry, err := DeserializeEntry(file)
+		if err == io.EOF {
+			return records, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, SerializeEntry(entry))
 	}
 }
 
