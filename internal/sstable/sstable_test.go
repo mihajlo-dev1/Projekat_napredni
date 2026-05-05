@@ -172,7 +172,7 @@ func TestValidateMerkleDetectsChangedDataRecord(t *testing.T) {
 		t.Fatalf("ValidateMerkle() = (%v, %v), want (true, nil)", valid, changed)
 	}
 
-	valueOffset := index[1].Offset + int64(8+len(index[1].Key))
+	valueOffset := index[1].Offset + int64(9+len(index[1].Key))
 	file, err := os.OpenFile(table.DataPath, os.O_WRONLY, 0644)
 	if err != nil {
 		t.Fatalf("OpenFile(data) error = %v", err)

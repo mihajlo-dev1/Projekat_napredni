@@ -1,8 +1,11 @@
 package sstable
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
+	"kv-engine/internal"
+	"kv-engine/internal/block"
 	"kv-engine/internal/bloom"
 	"kv-engine/internal/merkle"
 	"os"
@@ -26,11 +29,13 @@ type SSTable struct {
 	FilterPath   string
 	MetadataPath string
 	SummaryStep  int
+	blocks       *block.Manager
 }
 
 type Entry struct {
-	Key   string
-	Value []byte
+	Key     string
+	Value   []byte
+	Deleted bool
 }
 
 type IndexEntry struct {
@@ -59,8 +64,18 @@ func New(dir string, summaryStep int) *SSTable {
 	}
 }
 
-func Create(dir string, entries map[string][]byte, summaryStep int) (*SSTable, *bloom.Filter, []IndexEntry, error) {
+func NewWithBlockManager(dir string, summaryStep int, blocks *block.Manager) *SSTable {
 	table := New(dir, summaryStep)
+	table.blocks = blocks
+	return table
+}
+
+func Create(dir string, entries map[string][]byte, summaryStep int) (*SSTable, *bloom.Filter, []IndexEntry, error) {
+	return CreateWithBlockManager(dir, entries, summaryStep, nil)
+}
+
+func CreateWithBlockManager(dir string, entries map[string][]byte, summaryStep int, blocks *block.Manager) (*SSTable, *bloom.Filter, []IndexEntry, error) {
+	table := NewWithBlockManager(dir, summaryStep, blocks)
 
 	if err := os.MkdirAll(table.Dir, 0755); err != nil {
 		return nil, nil, nil, err
@@ -90,73 +105,118 @@ func Create(dir string, entries map[string][]byte, summaryStep int) (*SSTable, *
 	return table, filter, index, nil
 }
 
+func CreateFromEntries(dir string, entries []internal.MemtableEntry, summaryStep int) (*SSTable, *bloom.Filter, []IndexEntry, error) {
+	return CreateFromEntriesWithBlockManager(dir, entries, summaryStep, nil)
+}
+
+func CreateFromEntriesWithBlockManager(dir string, entries []internal.MemtableEntry, summaryStep int, blocks *block.Manager) (*SSTable, *bloom.Filter, []IndexEntry, error) {
+	table := NewWithBlockManager(dir, summaryStep, blocks)
+
+	if err := os.MkdirAll(table.Dir, 0755); err != nil {
+		return nil, nil, nil, err
+	}
+
+	tableEntries := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		tableEntries = append(tableEntries, Entry{
+			Key:     entry.Key,
+			Value:   entry.Value,
+			Deleted: entry.Deleted,
+		})
+	}
+
+	filter, index, records, err := table.writeEntries(tableEntries)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if err := table.writeIndex(index); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := table.writeSummary(index); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := table.writeFilter(filter); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := table.writeMetadata(merkle.New(records)); err != nil {
+		return nil, nil, nil, err
+	}
+
+	return table, filter, index, nil
+}
+
 func (s *SSTable) WriteData(entries map[string][]byte) (*bloom.Filter, []IndexEntry, error) {
 	return Write(s.DataPath, entries)
 }
 
 func (s *SSTable) Get(key string) ([]byte, bool) {
-	filterFile, err := os.Open(s.FilterPath)
-	if err != nil {
+	value, found, deleted := s.Lookup(key)
+	if !found || deleted {
 		return nil, false
 	}
-	defer filterFile.Close()
+	return value, true
+}
+
+func (s *SSTable) Lookup(key string) ([]byte, bool, bool) {
+	filterFile, err := s.openReader(s.FilterPath)
+	if err != nil {
+		return nil, false, false
+	}
 
 	filter, err := DeserializeBloomFilter(filterFile)
 	if err != nil || !filter.MightContain(key) {
-		return nil, false
+		return nil, false, false
 	}
 
-	summaryFile, err := os.Open(s.SummaryPath)
+	summaryFile, err := s.openReader(s.SummaryPath)
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
-	defer summaryFile.Close()
 
 	minKey, maxKey, err := DeserializeSummaryBounds(summaryFile)
 	if err != nil || key < minKey || key > maxKey {
-		return nil, false
+		return nil, false, false
 	}
 
 	summary, err := readSummary(summaryFile)
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
 
 	start, end := FindIndexRange(summary, key)
 	indexEntry, ok := s.findIndexEntry(key, start, end)
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 
-	dataFile, err := os.Open(s.DataPath)
+	dataFile, err := s.openReader(s.DataPath)
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
-	defer dataFile.Close()
 
 	if _, err := dataFile.Seek(indexEntry.Offset, io.SeekStart); err != nil {
-		return nil, false
+		return nil, false, false
 	}
 
 	entry, err := DeserializeEntry(dataFile)
 	if err != nil || entry.Key != key {
-		return nil, false
+		return nil, false, false
 	}
 
-	return entry.Value, true
+	return entry.Value, true, entry.Deleted
 }
 
 func (s *SSTable) ValidateMerkle() (bool, []int, error) {
-	records, err := readDataRecords(s.DataPath)
+	records, err := s.readDataRecords()
 	if err != nil {
 		return false, nil, err
 	}
 
-	metadataFile, err := os.Open(s.MetadataPath)
+	metadataFile, err := s.openReader(s.MetadataPath)
 	if err != nil {
 		return false, nil, err
 	}
-	defer metadataFile.Close()
 
 	tree, err := DeserializeMerkleTree(metadataFile)
 	if err != nil {
@@ -168,31 +228,27 @@ func (s *SSTable) ValidateMerkle() (bool, []int, error) {
 }
 
 func (s *SSTable) writeData(entries map[string][]byte) (*bloom.Filter, []IndexEntry, [][]byte, error) {
-	return write(s.DataPath, entries)
+	return writeWithBlockManager(s.DataPath, entries, s.blocks)
+}
+
+func (s *SSTable) writeEntries(entries []Entry) (*bloom.Filter, []IndexEntry, [][]byte, error) {
+	return writeEntriesWithBlockManager(s.DataPath, entries, s.blocks)
 }
 
 func (s *SSTable) writeIndex(index []IndexEntry) error {
-	file, err := os.Create(s.IndexPath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
+	var file bytes.Buffer
 
 	for _, entry := range index {
-		if err := writeFull(file, SerializeIndexEntry(entry)); err != nil {
+		if err := writeFull(&file, SerializeIndexEntry(entry)); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return s.writeFile(s.IndexPath, file.Bytes())
 }
 
 func (s *SSTable) writeSummary(index []IndexEntry) error {
-	file, err := os.Create(s.SummaryPath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
+	var file bytes.Buffer
 
 	minKey, maxKey := "", ""
 	if len(index) > 0 {
@@ -200,33 +256,32 @@ func (s *SSTable) writeSummary(index []IndexEntry) error {
 		maxKey = index[len(index)-1].Key
 	}
 
-	if err := writeFull(file, SerializeSummaryBounds(minKey, maxKey)); err != nil {
+	if err := writeFull(&file, SerializeSummaryBounds(minKey, maxKey)); err != nil {
 		return err
 	}
 
 	for _, entry := range BuildSummary(index, s.SummaryStep) {
-		if err := writeFull(file, SerializeSummaryEntry(entry)); err != nil {
+		if err := writeFull(&file, SerializeSummaryEntry(entry)); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return s.writeFile(s.SummaryPath, file.Bytes())
 }
 
 func (s *SSTable) writeFilter(filter *bloom.Filter) error {
-	return os.WriteFile(s.FilterPath, SerializeBloomFilter(filter), 0644)
+	return s.writeFile(s.FilterPath, SerializeBloomFilter(filter))
 }
 
 func (s *SSTable) writeMetadata(tree *merkle.Tree) error {
-	return os.WriteFile(s.MetadataPath, SerializeMerkleTree(tree), 0644)
+	return s.writeFile(s.MetadataPath, SerializeMerkleTree(tree))
 }
 
 func (s *SSTable) findIndexEntry(key string, start int, end int) (IndexEntry, bool) {
-	file, err := os.Open(s.IndexPath)
+	file, err := s.openReader(s.IndexPath)
 	if err != nil {
 		return IndexEntry{}, false
 	}
-	defer file.Close()
 
 	for position := 0; ; position++ {
 		entry, err := DeserializeIndexEntry(file)
@@ -266,12 +321,11 @@ func readSummary(r io.Reader) ([]SumaryEntry, error) {
 	}
 }
 
-func readDataRecords(path string) ([][]byte, error) {
-	file, err := os.Open(path)
+func (s *SSTable) readDataRecords() ([][]byte, error) {
+	file, err := s.openReader(s.DataPath)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
 
 	records := make([][]byte, 0)
 	for {
@@ -323,8 +377,13 @@ func SerializeEntry(e Entry) []byte {
 
 	valueSize := uint32(len(e.Value))
 
-	buf := make([]byte, 4+4+len(keyBytes)+len(e.Value))
+	buf := make([]byte, 1+4+4+len(keyBytes)+len(e.Value))
 	offset := 0
+
+	if e.Deleted {
+		buf[offset] = 1
+	}
+	offset++
 
 	binary.BigEndian.PutUint32(buf[offset:], keySize)
 	offset += 4
@@ -342,13 +401,14 @@ func SerializeEntry(e Entry) []byte {
 }
 
 func DeserializeEntry(r io.Reader) (Entry, error) {
-	var header [8]byte
+	var header [9]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
 		return Entry{}, err
 	}
 
-	keySize := binary.BigEndian.Uint32(header[0:4])
-	valueSize := binary.BigEndian.Uint32(header[4:8])
+	deleted := header[0] == 1
+	keySize := binary.BigEndian.Uint32(header[1:5])
+	valueSize := binary.BigEndian.Uint32(header[5:9])
 
 	keyBytes := make([]byte, int(keySize))
 	if _, err := io.ReadFull(r, keyBytes); err != nil {
@@ -361,8 +421,9 @@ func DeserializeEntry(r io.Reader) (Entry, error) {
 	}
 
 	return Entry{
-		Key:   string(keyBytes),
-		Value: value,
+		Key:     string(keyBytes),
+		Value:   value,
+		Deleted: deleted,
 	}, nil
 }
 
@@ -517,49 +578,84 @@ func Write(path string, entries map[string][]byte) (*bloom.Filter, []IndexEntry,
 }
 
 func write(path string, entries map[string][]byte) (*bloom.Filter, []IndexEntry, [][]byte, error) {
+	return writeWithBlockManager(path, entries, nil)
+}
 
-	keys := make([]string, 0, len(entries))
-	for k := range entries {
-		keys = append(keys, k)
+func writeWithBlockManager(path string, entries map[string][]byte, blocks *block.Manager) (*bloom.Filter, []IndexEntry, [][]byte, error) {
+	tableEntries := make([]Entry, 0, len(entries))
+	for key, value := range entries {
+		tableEntries = append(tableEntries, Entry{
+			Key:   key,
+			Value: value,
+		})
 	}
-	sort.Strings(keys)
+	return writeEntriesWithBlockManager(path, tableEntries, blocks)
+}
 
-	file, err := os.Create(path)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	defer file.Close()
+func writeEntries(path string, entries []Entry) (*bloom.Filter, []IndexEntry, [][]byte, error) {
+	return writeEntriesWithBlockManager(path, entries, nil)
+}
+
+func writeEntriesWithBlockManager(path string, entries []Entry, blocks *block.Manager) (*bloom.Filter, []IndexEntry, [][]byte, error) {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Key < entries[j].Key
+	})
+	var file bytes.Buffer
 
 	filter := bloom.New(1000)
 	index := make([]IndexEntry, 0)
-	records := make([][]byte, 0, len(keys))
+	records := make([][]byte, 0, len(entries))
 
 	var offset int64 = 0
 
-	for _, k := range keys {
-		entry := Entry{
-			Key:   k,
-			Value: entries[k],
-		}
-
+	for _, entry := range entries {
 		data := SerializeEntry(entry)
 
 		index = append(index, IndexEntry{
-			Key:    k,
+			Key:    entry.Key,
 			Offset: offset,
 		})
 
-		if err := writeFull(file, data); err != nil {
+		if err := writeFull(&file, data); err != nil {
 			return nil, nil, nil, err
 		}
 
 		offset += int64(len(data))
 
-		filter.Add(k)
+		filter.Add(entry.Key)
 		records = append(records, data)
 	}
 
+	if blocks != nil {
+		if err := blocks.WriteFile(path, file.Bytes()); err != nil {
+			return nil, nil, nil, err
+		}
+	} else if err := os.WriteFile(path, file.Bytes(), 0644); err != nil {
+		return nil, nil, nil, err
+	}
+
 	return filter, index, records, nil
+}
+
+func (s *SSTable) openReader(path string) (*bytes.Reader, error) {
+	var data []byte
+	var err error
+	if s.blocks != nil {
+		data, err = s.blocks.ReadFile(path)
+	} else {
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(data), nil
+}
+
+func (s *SSTable) writeFile(path string, data []byte) error {
+	if s.blocks != nil {
+		return s.blocks.WriteFile(path, data)
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 func writeFull(w io.Writer, data []byte) error {

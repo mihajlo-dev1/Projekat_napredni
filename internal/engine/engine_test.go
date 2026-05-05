@@ -1,0 +1,139 @@
+package engine
+
+import (
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"kv-engine/internal/config"
+)
+
+func testConfig(dir string) config.Config {
+	cfg := config.Default()
+	cfg.WAL.Directory = filepath.Join(dir, "wal", "segment")
+	cfg.Memtable.Implementation = "hashmap"
+	cfg.Memtable.MaxEntries = 1
+	cfg.Memtable.Instances = 1
+	cfg.SSTable.Directory = filepath.Join(dir, "sstable")
+	cfg.SSTable.SummaryStep = 1
+	cfg.Cache.Capacity = 2
+	cfg.TokenBucket.Capacity = 100
+	return cfg
+}
+
+func TestGetReadsFlushedSSTableAfterReopen(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := first.Put("alpha", []byte("one")); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() after reopen error = %v", err)
+	}
+	defer second.Close()
+
+	value, ok := second.Get("alpha")
+	if !ok {
+		t.Fatalf("Get(alpha) ok = false, want true")
+	}
+	if string(value) != "one" {
+		t.Fatalf("Get(alpha) = %q, want one", value)
+	}
+}
+
+func TestDeleteTombstoneHidesOlderSSTableValue(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := e.Put("alpha", []byte("one")); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	if err := e.Delete("alpha"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() after reopen error = %v", err)
+	}
+	defer reopened.Close()
+
+	value, ok := reopened.Get("alpha")
+	if ok || value != nil {
+		t.Fatalf("Get(alpha) = (%q, %v), want (nil, false)", value, ok)
+	}
+}
+
+func TestTokenBucketStateIsHiddenAndRestored(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	cfg.Memtable.MaxEntries = 10
+	cfg.TokenBucket.Capacity = 2
+	cfg.TokenBucket.RefillIntervalSeconds = 3600
+
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := first.Put("alpha", []byte("one")); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	if _, _, err := first.GetWithError(tokenBucketStateKey); !errors.Is(err, ErrReservedKey) {
+		t.Fatalf("GetWithError(system key) error = %v, want ErrReservedKey", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() after reopen error = %v", err)
+	}
+	defer second.Close()
+	if err := second.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if _, ok, err := second.GetWithError("alpha"); err != nil || !ok {
+		t.Fatalf("first GetWithError(alpha) = ok %v err %v, want ok true err nil", ok, err)
+	}
+	if _, _, err := second.GetWithError("alpha"); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("second GetWithError(alpha) error = %v, want ErrRateLimited", err)
+	}
+}
+
+func TestValidateMerkleThroughEngine(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer e.Close()
+
+	if err := e.Put("alpha", []byte("one")); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	valid, changed, err := e.ValidateMerkle(1)
+	if err != nil {
+		t.Fatalf("ValidateMerkle() error = %v", err)
+	}
+	if !valid || len(changed) != 0 {
+		t.Fatalf("ValidateMerkle() = (%v, %v), want (true, nil)", valid, changed)
+	}
+}

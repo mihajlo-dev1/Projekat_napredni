@@ -25,10 +25,12 @@ type frame struct {
 type frameReader struct {
 	r           io.Reader
 	blockOffset int
+	blockSize   int
+	bytesRead   int
 }
 
-func newFrameReader(r io.Reader) *frameReader {
-	return &frameReader{r: r}
+func newFrameReader(r io.Reader, blockSize int) *frameReader {
+	return &frameReader{r: r, blockSize: blockSize}
 }
 
 func SerializeRecord(record *internal.Record) []byte {
@@ -217,12 +219,13 @@ func ReadNextRecord(r *frameReader) (*internal.Record, error) {
 
 func readFrame(r *frameReader) (frame, error) {
 	for {
-		if remaining := blockSize - r.blockOffset; remaining < frameHeaderSize && remaining != blockSize {
+		if remaining := r.blockSize - r.blockOffset; remaining < frameHeaderSize && remaining != r.blockSize {
 			padding := make([]byte, remaining)
 			if _, err := io.ReadFull(r.r, padding); err != nil {
 				return frame{}, err
 			}
 			r.blockOffset = 0
+			r.bytesRead += remaining
 			continue
 		}
 
@@ -234,17 +237,18 @@ func readFrame(r *frameReader) (frame, error) {
 			return frame{}, err
 		}
 		r.blockOffset += frameHeaderSize
+		r.bytesRead += frameHeaderSize
 
 		fragmentType := internal.RecordType(header[0])
 		length := int(binary.BigEndian.Uint32(header[1:]))
-		if length < 0 || length > blockSize {
+		if length < 0 || length > r.blockSize {
 			return frame{}, fmt.Errorf("wal: invalid frame length %d", length)
 		}
 		if length == 0 && fragmentType == 0 {
 			r.blockOffset = 0
 			continue
 		}
-		if length > blockSize-r.blockOffset {
+		if length > r.blockSize-r.blockOffset {
 			return frame{}, fmt.Errorf("wal: frame crosses block boundary")
 		}
 
@@ -253,7 +257,8 @@ func readFrame(r *frameReader) (frame, error) {
 			return frame{}, err
 		}
 		r.blockOffset += length
-		if r.blockOffset == blockSize {
+		r.bytesRead += length
+		if r.blockOffset == r.blockSize {
 			r.blockOffset = 0
 		}
 

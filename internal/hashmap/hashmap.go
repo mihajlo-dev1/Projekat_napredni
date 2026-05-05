@@ -26,13 +26,13 @@ func New() *HashMap {
 }
 
 func (h *HashMap) bucketIndex(key string) int {
-	hash := 0
+	hash := uint64(0)
 
 	for i := 0; i < len(key); i++ {
-		hash = hash*31 + int(key[i])
+		hash = hash*31 + uint64(key[i])
 	}
 
-	return hash % len(h.buckets)
+	return int(hash % uint64(len(h.buckets)))
 }
 
 func (h *HashMap) resize() {
