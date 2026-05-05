@@ -1,6 +1,10 @@
 package memtable
 
-import "kv-engine/internal"
+import (
+	"sort"
+
+	"kv-engine/internal"
+)
 
 type Entry = internal.MemtableEntry
 
@@ -40,8 +44,8 @@ func (m *Memtable) Get(key string) ([]byte, bool) {
 	return m.backend.Get(key)
 }
 
-func (m *Memtable) Delete(key string) {
-	m.backend.Delete(key)
+func (m *Memtable) Delete(key string) bool {
+	return m.backend.Delete(key)
 }
 
 func (m *Memtable) Size() int {
@@ -52,8 +56,12 @@ func (m *Memtable) IsFull() bool {
 	return m.Size() >= m.maxEntries
 }
 
-func (m *Memtable) Entries() map[string]Entry {
-	return m.backend.Entries()
+func (m *Memtable) Entries() []Entry {
+	entries := m.backend.Entries()
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Key < entries[j].Key
+	})
+	return entries
 }
 
 func (m *Memtable) Clear() {
@@ -61,9 +69,10 @@ func (m *Memtable) Clear() {
 }
 
 func (m *Memtable) IsDeleted(key string) bool {
-	entry, ok := m.backend.Entries()[key]
-	if !ok {
-		return false
+	for _, entry := range m.backend.Entries() {
+		if entry.Key == key {
+			return entry.Deleted
+		}
 	}
-	return entry.Deleted
+	return false
 }

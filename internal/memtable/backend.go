@@ -1,8 +1,6 @@
 package memtable
 
 import (
-	"fmt"
-
 	"kv-engine/internal"
 	"kv-engine/internal/btree"
 	"kv-engine/internal/hashmap"
@@ -13,7 +11,7 @@ type backend interface {
 	Put(key string, value []byte)
 	Get(key string) ([]byte, bool)
 	Delete(key string) bool
-	Entries() map[string]internal.MemtableEntry
+	Entries() []internal.MemtableEntry
 }
 
 func newBackend(implementation string) (backend, error) {
@@ -21,11 +19,11 @@ func newBackend(implementation string) (backend, error) {
 	case "", "hashmap":
 		return hashmap.New(), nil
 	case "skiplist":
-		return nil, fmt.Errorf("memtable backend %q not implemented yet", implementation)
+		return skiplist.New(), nil
 	case "btree":
-		return nil, fmt.Errorf("memtable backend %q not implemented yet", implementation)
+		return btree.New(4), nil
 	default:
-		return nil, fmt.Errorf("unknown memtable backend %q", implementation)
+		return hashmap.New(), nil
 	}
 }
 
