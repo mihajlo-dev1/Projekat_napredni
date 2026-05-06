@@ -79,6 +79,83 @@ func TestDeleteTombstoneHidesOlderSSTableValue(t *testing.T) {
 	}
 }
 
+func TestMemtableTombstoneHidesOlderSSTableValue(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := first.Put("alpha", []byte("one")); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	cfg.Memtable.MaxEntries = 10
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() after reopen error = %v", err)
+	}
+	defer second.Close()
+
+	if err := second.Delete("alpha"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	value, ok := second.Get("alpha")
+	if ok || value != nil {
+		t.Fatalf("Get(alpha) = (%q, %v), want (nil, false)", value, ok)
+	}
+}
+
+func TestStartReplaysAllWALSegmentsBeforeReset(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.WAL.RecordsPerSegment = 1
+	cfg.Memtable.MaxEntries = 100
+
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := first.wal.AppendPut([]byte("alpha"), []byte("one")); err != nil {
+		t.Fatalf("AppendPut(alpha) error = %v", err)
+	}
+	if err := first.wal.AppendPut([]byte("bravo"), []byte("two")); err != nil {
+		t.Fatalf("AppendPut(bravo) error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	cfg.Memtable.MaxEntries = 1
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() after reopen error = %v", err)
+	}
+	defer second.Close()
+
+	if err := second.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	for key, want := range map[string]string{
+		"alpha": "one",
+		"bravo": "two",
+	} {
+		value, ok := second.Get(key)
+		if !ok {
+			t.Fatalf("Get(%s) ok = false, want true", key)
+		}
+		if string(value) != want {
+			t.Fatalf("Get(%s) = %q, want %q", key, value, want)
+		}
+	}
+}
+
 func TestTokenBucketStateIsHiddenAndRestored(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	cfg.Memtable.MaxEntries = 10

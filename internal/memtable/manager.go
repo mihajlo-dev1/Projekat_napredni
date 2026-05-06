@@ -65,6 +65,19 @@ func (m *MemtableManager) Get(key string) ([]byte, bool) {
 	return nil, false
 }
 
+func (m *MemtableManager) IsDeleted(key string) bool {
+	for i := len(m.tables) - 1; i >= 0; i-- {
+		if _, found := m.tables[i].Get(key); found {
+			return false
+		}
+		if m.tables[i].IsDeleted(key) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (m *MemtableManager) Delete(key string) bool {
 	active := m.tables[len(m.tables)-1]
 	deleted := active.Delete(key)

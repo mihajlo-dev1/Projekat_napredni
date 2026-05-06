@@ -17,6 +17,15 @@ type Manager struct {
 	cache     *blockcache.Cache
 }
 
+type fileReader struct {
+	manager *Manager
+	path    string
+	size    int64
+	offset  int64
+	block   []byte
+	index   uint64
+}
+
 func New(blockSizeKB int, cache *blockcache.Cache) *Manager {
 	return &Manager{
 		blockSize: blockSizeKB * 1024,
@@ -121,6 +130,143 @@ func (m *Manager) ReadFile(path string) ([]byte, error) {
 	}
 
 	return data[:info.Size()], nil
+}
+
+func (m *Manager) OpenReader(path string) (io.Reader, error) {
+	if err := m.validateBlockSize(); err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("block manager: stat %q: %w", path, err)
+	}
+
+	return &fileReader{
+		manager: m,
+		path:    path,
+		size:    info.Size(),
+	}, nil
+}
+
+func (m *Manager) EnsureFileSize(path string, size int64) error {
+	if err := m.validateBlockSize(); err != nil {
+		return err
+	}
+	if size < 0 {
+		return fmt.Errorf("block manager: negative file size %d", size)
+	}
+	if err := os.MkdirAll(filepathDir(path), 0755); err != nil {
+		return fmt.Errorf("block manager: create parent for %q: %w", path, err)
+	}
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("block manager: open %q for sizing: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Truncate(path, size); err != nil {
+		return fmt.Errorf("block manager: resize %q: %w", path, err)
+	}
+
+	if m.cache != nil {
+		blockCount := uint64((size + int64(m.blockSize) - 1) / int64(m.blockSize))
+		for index := uint64(0); index < blockCount; index++ {
+			m.cache.Delete(path, index)
+		}
+	}
+
+	return nil
+}
+
+func (m *Manager) WriteAt(path string, offset int64, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if err := m.validateBlockSize(); err != nil {
+		return err
+	}
+	if offset < 0 {
+		return fmt.Errorf("block manager: negative write offset %d", offset)
+	}
+	if err := os.MkdirAll(filepathDir(path), 0755); err != nil {
+		return fmt.Errorf("block manager: create parent for %q: %w", path, err)
+	}
+
+	for len(data) > 0 {
+		blockIndex := uint64(offset / int64(m.blockSize))
+		blockOffset := int(offset % int64(m.blockSize))
+		chunkSize := m.blockSize - blockOffset
+		if chunkSize > len(data) {
+			chunkSize = len(data)
+		}
+
+		blockData := make([]byte, m.blockSize)
+		if blockOffset != 0 || chunkSize != m.blockSize {
+			existing, err := m.readBlockAllowPartial(path, blockIndex)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			copy(blockData, existing)
+		}
+
+		copy(blockData[blockOffset:], data[:chunkSize])
+		if err := m.WriteBlock(path, blockIndex, blockData); err != nil {
+			return err
+		}
+
+		data = data[chunkSize:]
+		offset += int64(chunkSize)
+	}
+
+	return nil
+}
+
+func (r *fileReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.offset >= r.size {
+		return 0, io.EOF
+	}
+
+	total := 0
+	for len(p) > 0 && r.offset < r.size {
+		blockIndex := uint64(r.offset / int64(r.manager.blockSize))
+		if r.block == nil || r.index != blockIndex {
+			block, err := r.manager.readBlockAllowPartial(r.path, blockIndex)
+			if err != nil {
+				if total > 0 {
+					return total, nil
+				}
+				return 0, err
+			}
+			r.block = block
+			r.index = blockIndex
+		}
+
+		blockOffset := int(r.offset % int64(r.manager.blockSize))
+		remainingInBlock := len(r.block) - blockOffset
+		remainingInFile := int(r.size - r.offset)
+		if remainingInBlock > remainingInFile {
+			remainingInBlock = remainingInFile
+		}
+		if remainingInBlock <= 0 {
+			break
+		}
+
+		n := copy(p, r.block[blockOffset:blockOffset+remainingInBlock])
+		p = p[n:]
+		r.offset += int64(n)
+		total += n
+	}
+
+	if total == 0 {
+		return 0, io.EOF
+	}
+	return total, nil
 }
 
 func (m *Manager) WriteFile(path string, data []byte) error {

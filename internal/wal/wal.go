@@ -1,10 +1,10 @@
 package wal
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"kv-engine/internal"
@@ -33,12 +33,21 @@ type WAL struct {
 type segmentWriter struct {
 	path   string
 	blocks *block.Manager
+	file   *os.File
+	offset int64
 }
 
-func (w segmentWriter) Write(data []byte) (int, error) {
-	if err := w.blocks.AppendFile(w.path, data); err != nil {
+func (w *segmentWriter) Write(data []byte) (int, error) {
+	var err error
+	if w.blocks != nil {
+		err = w.blocks.WriteAt(w.path, w.offset, data)
+	} else {
+		_, err = w.file.WriteAt(data, w.offset)
+	}
+	if err != nil {
 		return 0, err
 	}
+	w.offset += int64(len(data))
 	return len(data), nil
 }
 
@@ -57,6 +66,10 @@ func (w *WAL) Append(record *internal.Record) error {
 	defer w.mu.Unlock()
 
 	data := SerializeRecord(record)
+	emptySegmentSize := framedSize(0, len(data), w.blockSize)
+	if emptySegmentSize > w.maxSegmentBytes {
+		return fmt.Errorf("wal: record is larger than one segment")
+	}
 
 	if w.shouldRotateBeforeWrite(len(data)) {
 		if err := w.rotateSegment(); err != nil {
@@ -96,7 +109,8 @@ func (w *WAL) Append(record *internal.Record) error {
 			fragmentType = RecordMiddle
 		}
 
-		written, err := writeFrame(w.currentWriter(), fragmentType, chunk)
+		writer := w.currentWriter()
+		written, err := writeFrame(writer, fragmentType, chunk)
 		if err != nil {
 			return err
 		}
@@ -177,6 +191,10 @@ func (w *WAL) Reset() error {
 	w.currentBlockOffset = 0
 	w.currentSegmentBytes = 0
 
+	if err := w.ensureSegmentSize(w.currentSegmentPath()); err != nil {
+		return err
+	}
+
 	if w.blocks == nil {
 		file, err := w.openSegment(w.currentSegmentPath())
 		if err != nil {
@@ -228,10 +246,19 @@ func OpenConfigured(path string, blocks *block.Manager, blockSize int, segmentSi
 		tempWAL.currentBlockOffset = blockOffset
 		tempWAL.currentSegmentBytes = segmentBytes
 		if tempWAL.isSegmentFull() {
+			if err := tempWAL.ensureSegmentSize(tempWAL.currentSegmentPath()); err != nil {
+				return nil, err
+			}
 			tempWAL.currentSegmentIndex++
 			tempWAL.currentRecordCount = 0
 			tempWAL.currentBlockOffset = 0
 			tempWAL.currentSegmentBytes = 0
+		}
+	}
+
+	for index := 1; index <= tempWAL.currentSegmentIndex; index++ {
+		if err := tempWAL.ensureSegmentSize(tempWAL.segmentPath(index)); err != nil {
+			return nil, err
 		}
 	}
 
@@ -330,7 +357,7 @@ func (w *WAL) shouldRotateBeforeWrite(remainingRecordBytes int) bool {
 		return false
 	}
 
-	needed := frameHeaderSize + remainingRecordBytes
+	needed := framedSize(w.currentBlockOffset, remainingRecordBytes, w.blockSize)
 	return w.currentSegmentBytes+needed > w.maxSegmentBytes
 }
 
@@ -341,6 +368,10 @@ func (w *WAL) rotateSegment() error {
 	w.currentSegmentBytes = 0
 
 	if err := w.Close(); err != nil {
+		return err
+	}
+
+	if err := w.ensureSegmentSize(w.currentSegmentPath()); err != nil {
 		return err
 	}
 
@@ -356,7 +387,10 @@ func (w *WAL) rotateSegment() error {
 }
 
 func (w *WAL) openSegment(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+	if err := ensureFileSize(path, int64(w.maxSegmentBytes)); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 }
 
 func (w *WAL) openSegmentReader(path string) (io.Reader, error) {
@@ -364,22 +398,82 @@ func (w *WAL) openSegmentReader(path string) (io.Reader, error) {
 		return os.Open(path)
 	}
 
-	data, err := w.blocks.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return bytes.NewReader(data), nil
+	return w.blocks.OpenReader(path)
 }
 
 func (w *WAL) currentWriter() io.Writer {
 	if w.blocks != nil {
-		return segmentWriter{path: w.currentSegmentPath(), blocks: w.blocks}
+		return &segmentWriter{
+			path:   w.currentSegmentPath(),
+			blocks: w.blocks,
+			offset: int64(w.currentSegmentBytes),
+		}
 	}
-	return w.file
+	return &segmentWriter{
+		path:   w.currentSegmentPath(),
+		file:   w.file,
+		offset: int64(w.currentSegmentBytes),
+	}
 }
 
 func (w *WAL) currentSegmentPath() string {
-	return fmt.Sprintf("%s_%04d.log", w.dir, w.currentSegmentIndex)
+	return w.segmentPath(w.currentSegmentIndex)
+}
+
+func (w *WAL) segmentPath(index int) string {
+	return fmt.Sprintf("%s_%04d.log", w.dir, index)
+}
+
+func (w *WAL) ensureSegmentSize(path string) error {
+	if w.blocks != nil {
+		return w.blocks.EnsureFileSize(path, int64(w.maxSegmentBytes))
+	}
+	return ensureFileSize(path, int64(w.maxSegmentBytes))
+}
+
+func ensureFileSize(path string, size int64) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+
+	return os.Truncate(path, size)
+}
+
+func framedSize(blockOffset int, dataSize int, blockSize int) int {
+	total := 0
+	remaining := dataSize
+
+	for remaining > 0 {
+		space := blockSize - blockOffset
+		if space < frameHeaderSize {
+			total += space
+			blockOffset = 0
+			space = blockSize
+		}
+
+		chunkSize := space - frameHeaderSize
+		if chunkSize > remaining {
+			chunkSize = remaining
+		}
+
+		total += frameHeaderSize + chunkSize
+		blockOffset += frameHeaderSize + chunkSize
+		if blockOffset == blockSize {
+			blockOffset = 0
+		}
+
+		remaining -= chunkSize
+	}
+
+	return total
 }
 
 func (w *WAL) segmentPaths() []string {

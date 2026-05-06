@@ -36,6 +36,8 @@ type Engine struct {
 	sstableDir  string
 	summaryStep int
 	nextTableID int
+	replaying   bool
+	replayFlush bool
 }
 
 func New(cfg config.Config) (*Engine, error) {
@@ -86,6 +88,8 @@ func New(cfg config.Config) (*Engine, error) {
 func (e *Engine) Start() error {
 	var replayErr error
 
+	e.replaying = true
+	e.replayFlush = false
 	if err := e.wal.Replay(
 		func(key []byte, value []byte) {
 			if replayErr != nil {
@@ -106,14 +110,31 @@ func (e *Engine) Start() error {
 			}
 		},
 	); err != nil {
+		e.replaying = false
 		return err
 	}
+	e.replaying = false
 
 	if replayErr != nil {
 		return replayErr
 	}
 
-	return e.restoreTokenBucketState()
+	if e.replayFlush && len(e.memtables.Entries()) > 0 {
+		if err := e.flushMemtables(); err != nil {
+			return err
+		}
+	} else if e.replayFlush {
+		if err := e.wal.Reset(); err != nil {
+			return err
+		}
+	}
+
+	e.replayFlush = false
+	if err := e.restoreTokenBucketState(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (e *Engine) Put(key string, value []byte) error {
@@ -188,6 +209,10 @@ func (e *Engine) get(key string) ([]byte, bool) {
 		e.cache.Put(key, value)
 		return value, true
 	}
+	if e.memtables.IsDeleted(key) {
+		fmt.Printf("[read] key=%q source=memtable tombstone\n", key)
+		return nil, false
+	}
 
 	for i := len(e.tables) - 1; i >= 0; i-- {
 		value, found, deleted := e.tables[i].Lookup(key)
@@ -241,6 +266,9 @@ func (e *Engine) getInternal(key string) ([]byte, bool) {
 	if value, ok := e.memtables.Get(key); ok {
 		return value, true
 	}
+	if e.memtables.IsDeleted(key) {
+		return nil, false
+	}
 
 	for i := len(e.tables) - 1; i >= 0; i-- {
 		value, found, deleted := e.tables[i].Lookup(key)
@@ -291,6 +319,10 @@ func (e *Engine) flushMemtables() error {
 	e.tables = append(e.tables, table)
 	e.nextTableID++
 	e.memtables.Clear()
+	if e.replaying {
+		e.replayFlush = true
+		return nil
+	}
 	return e.wal.Reset()
 }
 

@@ -8,7 +8,7 @@
     "implementation": "hashmap",
     "maxEntries": 3,
     "maxSizeKB": 1024,
-    "instances": 1
+    "instances": 2
   },
   "sstable": {
     "directory": "data/sstable",

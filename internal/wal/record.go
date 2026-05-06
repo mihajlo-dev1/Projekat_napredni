@@ -229,6 +229,9 @@ func readFrame(r *frameReader) (frame, error) {
 			continue
 		}
 
+		headerBlockOffset := r.blockOffset
+		headerBytesRead := r.bytesRead
+
 		var header [frameHeaderSize]byte
 		if _, err := io.ReadFull(r.r, header[:]); err != nil {
 			if err == io.ErrUnexpectedEOF {
@@ -245,8 +248,9 @@ func readFrame(r *frameReader) (frame, error) {
 			return frame{}, fmt.Errorf("wal: invalid frame length %d", length)
 		}
 		if length == 0 && fragmentType == 0 {
-			r.blockOffset = 0
-			continue
+			r.blockOffset = headerBlockOffset
+			r.bytesRead = headerBytesRead
+			return frame{}, io.EOF
 		}
 		if length > r.blockSize-r.blockOffset {
 			return frame{}, fmt.Errorf("wal: frame crosses block boundary")
