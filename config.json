@@ -22,11 +22,6 @@
     "blockSizeKB": 4,
     "cacheCapacity": 64
   },
-  "lsm": {
-    "maxLevels": 3,
-    "compactionAlgorithm": "size-tiered",
-    "level0MaxTables": 4
-  },
   "tokenBucket": {
     "capacity": 10,
     "refillIntervalSeconds": 60

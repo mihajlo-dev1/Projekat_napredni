@@ -12,7 +12,6 @@ type Config struct {
 	SSTable      SSTableConfig      `json:"sstable"`
 	Cache        CacheConfig        `json:"cache"`
 	BlockManager BlockManagerConfig `json:"blockManager"`
-	LSM          LSMConfig          `json:"lsm"`
 	TokenBucket  TokenBucketConfig  `json:"tokenBucket"`
 }
 
@@ -44,12 +43,6 @@ type BlockManagerConfig struct {
 	CacheCapacity int `json:"cacheCapacity"`
 }
 
-type LSMConfig struct {
-	MaxLevels           int    `json:"maxLevels"`
-	CompactionAlgorithm string `json:"compactionAlgorithm"`
-	Level0MaxTables     int    `json:"level0MaxTables"`
-}
-
 type TokenBucketConfig struct {
 	Capacity              int `json:"capacity"`
 	RefillIntervalSeconds int `json:"refillIntervalSeconds"`
@@ -79,11 +72,6 @@ func Default() Config {
 		BlockManager: BlockManagerConfig{
 			BlockSizeKB:   4,
 			CacheCapacity: 64,
-		},
-		LSM: LSMConfig{
-			MaxLevels:           3,
-			CompactionAlgorithm: "size-tiered",
-			Level0MaxTables:     4,
 		},
 		TokenBucket: TokenBucketConfig{
 			Capacity:              10,
@@ -155,18 +143,6 @@ func (c Config) Validate() error {
 	}
 	if c.BlockManager.CacheCapacity < 0 {
 		return fmt.Errorf("blockManager.cacheCapacity must be 0 or greater")
-	}
-
-	if c.LSM.MaxLevels < 1 {
-		return fmt.Errorf("lsm.maxLevels must be at least 1")
-	}
-	switch c.LSM.CompactionAlgorithm {
-	case "size-tiered", "leveled":
-	default:
-		return fmt.Errorf("lsm.compactionAlgorithm must be size-tiered or leveled")
-	}
-	if c.LSM.Level0MaxTables < 1 {
-		return fmt.Errorf("lsm.level0MaxTables must be at least 1")
 	}
 
 	if c.TokenBucket.Capacity < 1 {

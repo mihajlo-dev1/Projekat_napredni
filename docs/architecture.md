@@ -40,7 +40,6 @@ Paketi koje je lako podeliti po clanovima tima:
 - `internal/block`
 - `internal/blockcache`
 - `internal/tokenbucket`
-- `internal/lsm`
 
 ## Folder Guide
 
@@ -86,9 +85,6 @@ Paketi koje je lako podeliti po clanovima tima:
 - `internal/tokenbucket`
   Ogranicenje stope pristupa nad operacijama sistema.
 
-- `internal/lsm`
-  Organizacija SSTable-ova po nivoima i kasnije kompakcije.
-
 - `internal/config`
   Ucitavanje i validacija spoljne konfiguracije.
 
@@ -103,8 +99,7 @@ Paketi koje je lako podeliti po clanovima tima:
 1. `PUT` ili `DELETE` prvo ide u `WAL`.
 2. Posle potvrdjenog upisa, operacija ide u `Memtable`.
 3. Kada se popuni `Memtable`, radi se flush u `SSTable`.
-4. Za trenutni cilj projekta (ocena 8), nove SSTable tabele se cuvaju redom kao
-   `table_000001`, `table_000002`, ... Kompakcija/LSM nije deo cilja za ocenu 8.
+4. Nove SSTable tabele se cuvaju redom kao `table_000001`, `table_000002`, ...
 5. `DELETE` se zapisuje kao tombstone, da starija vrednost iz prethodne SSTable
    tabele ne bi bila vracena.
 
