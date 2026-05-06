@@ -1,9 +1,11 @@
 package merkle
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"io"
 )
 
 const hashSize = sha256.Size
@@ -71,6 +73,22 @@ func (t *Tree) Validate(values [][]byte) []int {
 	return changed
 }
 
+func (t *Tree) LeafCount() int {
+	if t == nil || len(t.levels) == 0 {
+		return 0
+	}
+	return len(t.levels[0])
+}
+
+func (t *Tree) MatchesLeaf(index int, value []byte) bool {
+	if t == nil || len(t.levels) == 0 || index < 0 || index >= len(t.levels[0]) {
+		return false
+	}
+
+	hash := sha256.Sum256(value)
+	return equalHash(t.levels[0][index], hash[:])
+}
+
 func (t *Tree) Serialize() []byte {
 	if t == nil || len(t.levels) == 0 {
 		buf := make([]byte, 4)
@@ -91,22 +109,29 @@ func (t *Tree) Serialize() []byte {
 }
 
 func Deserialize(data []byte) (*Tree, error) {
-	if len(data) < 4 {
+	return DeserializeFromReader(bytes.NewReader(data))
+}
+
+func DeserializeFromReader(r io.Reader) (*Tree, error) {
+	var countBuf [4]byte
+	if _, err := io.ReadFull(r, countBuf[:]); err != nil {
 		return nil, errors.New("merkle: missing leaf count")
 	}
 
-	count := int(binary.BigEndian.Uint32(data[0:4]))
-	expected := 4 + count*hashSize
-	if len(data) != expected {
-		return nil, errors.New("merkle: invalid data length")
+	count := int(binary.BigEndian.Uint32(countBuf[:]))
+	leaves := make([][]byte, 0, count)
+	for i := 0; i < count; i++ {
+		leaf := make([]byte, hashSize)
+		if _, err := io.ReadFull(r, leaf); err != nil {
+			return nil, errors.New("merkle: invalid data length")
+		}
+		leaves = append(leaves, leaf)
 	}
 
-	leaves := make([][]byte, 0, count)
-	offset := 4
-	for i := 0; i < count; i++ {
-		leaf := append([]byte(nil), data[offset:offset+hashSize]...)
-		leaves = append(leaves, leaf)
-		offset += hashSize
+	var extra [1]byte
+	n, err := r.Read(extra[:])
+	if err != io.EOF || n != 0 {
+		return nil, errors.New("merkle: invalid data length")
 	}
 
 	return newFromLeaves(leaves), nil

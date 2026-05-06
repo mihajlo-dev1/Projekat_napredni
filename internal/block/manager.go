@@ -17,6 +17,12 @@ type Manager struct {
 	cache     *blockcache.Cache
 }
 
+type Reader interface {
+	io.Reader
+	io.Seeker
+	io.Closer
+}
+
 type fileReader struct {
 	manager *Manager
 	path    string
@@ -132,7 +138,7 @@ func (m *Manager) ReadFile(path string) ([]byte, error) {
 	return data[:info.Size()], nil
 }
 
-func (m *Manager) OpenReader(path string) (io.Reader, error) {
+func (m *Manager) OpenReader(path string) (Reader, error) {
 	if err := m.validateBlockSize(); err != nil {
 		return nil, err
 	}
@@ -267,6 +273,35 @@ func (r *fileReader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	return total, nil
+}
+
+func (r *fileReader) Seek(offset int64, whence int) (int64, error) {
+	var next int64
+
+	switch whence {
+	case io.SeekStart:
+		next = offset
+	case io.SeekCurrent:
+		next = r.offset + offset
+	case io.SeekEnd:
+		next = r.size + offset
+	default:
+		return 0, fmt.Errorf("block manager: invalid seek whence %d", whence)
+	}
+
+	if next < 0 {
+		return 0, fmt.Errorf("block manager: negative seek offset %d", next)
+	}
+	if next > r.size {
+		next = r.size
+	}
+
+	r.offset = next
+	return r.offset, nil
+}
+
+func (r *fileReader) Close() error {
+	return nil
 }
 
 func (m *Manager) WriteFile(path string, data []byte) error {

@@ -32,6 +32,12 @@ type SSTable struct {
 	blocks       *block.Manager
 }
 
+type readSeekCloser interface {
+	io.Reader
+	io.Seeker
+	io.Closer
+}
+
 type Entry struct {
 	Key     string
 	Value   []byte
@@ -163,6 +169,7 @@ func (s *SSTable) Lookup(key string) ([]byte, bool, bool) {
 	if err != nil {
 		return nil, false, false
 	}
+	defer filterFile.Close()
 
 	filter, err := DeserializeBloomFilter(filterFile)
 	if err != nil || !filter.MightContain(key) {
@@ -173,18 +180,18 @@ func (s *SSTable) Lookup(key string) ([]byte, bool, bool) {
 	if err != nil {
 		return nil, false, false
 	}
+	defer summaryFile.Close()
 
 	minKey, maxKey, err := DeserializeSummaryBounds(summaryFile)
 	if err != nil || key < minKey || key > maxKey {
 		return nil, false, false
 	}
 
-	summary, err := readSummary(summaryFile)
+	start, end, err := findIndexRange(summaryFile, key)
 	if err != nil {
 		return nil, false, false
 	}
 
-	start, end := FindIndexRange(summary, key)
 	indexEntry, ok := s.findIndexEntry(key, start, end)
 	if !ok {
 		return nil, false, false
@@ -194,6 +201,7 @@ func (s *SSTable) Lookup(key string) ([]byte, bool, bool) {
 	if err != nil {
 		return nil, false, false
 	}
+	defer dataFile.Close()
 
 	if _, err := dataFile.Seek(indexEntry.Offset, io.SeekStart); err != nil {
 		return nil, false, false
@@ -208,22 +216,21 @@ func (s *SSTable) Lookup(key string) ([]byte, bool, bool) {
 }
 
 func (s *SSTable) ValidateMerkle() (bool, []int, error) {
-	records, err := s.readDataRecords()
-	if err != nil {
-		return false, nil, err
-	}
-
 	metadataFile, err := s.openReader(s.MetadataPath)
 	if err != nil {
 		return false, nil, err
 	}
+	defer metadataFile.Close()
 
 	tree, err := DeserializeMerkleTree(metadataFile)
 	if err != nil {
 		return false, nil, err
 	}
 
-	changed := tree.Validate(records)
+	changed, err := s.validateDataAgainstMerkle(tree)
+	if err != nil {
+		return false, nil, err
+	}
 	return len(changed) == 0, changed, nil
 }
 
@@ -282,6 +289,7 @@ func (s *SSTable) findIndexEntry(key string, start int, end int) (IndexEntry, bo
 	if err != nil {
 		return IndexEntry{}, false
 	}
+	defer file.Close()
 
 	for position := 0; ; position++ {
 		entry, err := DeserializeIndexEntry(file)
@@ -307,37 +315,60 @@ func (s *SSTable) findIndexEntry(key string, start int, end int) (IndexEntry, bo
 	}
 }
 
-func readSummary(r io.Reader) ([]SumaryEntry, error) {
-	summary := make([]SumaryEntry, 0)
+func findIndexRange(r io.Reader, key string) (int, int, error) {
+	previous, err := DeserializeSummaryEntry(r)
+	if err == io.EOF {
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+
 	for {
-		entry, err := DeserializeSummaryEntry(r)
+		next, err := DeserializeSummaryEntry(r)
 		if err == io.EOF {
-			return summary, nil
+			return previous.IndexOffSet, -1, nil
 		}
 		if err != nil {
-			return nil, err
+			return 0, 0, err
 		}
-		summary = append(summary, entry)
+		if key < next.Key {
+			return previous.IndexOffSet, next.IndexOffSet, nil
+		}
+		previous = next
 	}
 }
 
-func (s *SSTable) readDataRecords() ([][]byte, error) {
+func (s *SSTable) validateDataAgainstMerkle(tree *merkle.Tree) ([]int, error) {
 	file, err := s.openReader(s.DataPath)
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
 
-	records := make([][]byte, 0)
+	changed := make([]int, 0)
+	index := 0
+
 	for {
 		entry, err := DeserializeEntry(file)
 		if err == io.EOF {
-			return records, nil
+			break
 		}
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, SerializeEntry(entry))
+		if !tree.MatchesLeaf(index, SerializeEntry(entry)) {
+			changed = append(changed, index)
+		}
+		index++
 	}
+
+	for index < tree.LeafCount() {
+		changed = append(changed, index)
+		index++
+	}
+
+	return changed, nil
 }
 
 func BuildSummary(index []IndexEntry, sparsity int) []SumaryEntry {
@@ -551,12 +582,7 @@ func SerializeBloomFilter(filter *bloom.Filter) []byte {
 }
 
 func DeserializeBloomFilter(r io.Reader) (*bloom.Filter, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-
-	return bloom.Deserialize(data)
+	return bloom.DeserializeFromReader(r)
 }
 
 func SerializeMerkleTree(tree *merkle.Tree) []byte {
@@ -564,12 +590,7 @@ func SerializeMerkleTree(tree *merkle.Tree) []byte {
 }
 
 func DeserializeMerkleTree(r io.Reader) (*merkle.Tree, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-
-	return merkle.Deserialize(data)
+	return merkle.DeserializeFromReader(r)
 }
 
 func Write(path string, entries map[string][]byte) (*bloom.Filter, []IndexEntry, error) {
@@ -637,18 +658,11 @@ func writeEntriesWithBlockManager(path string, entries []Entry, blocks *block.Ma
 	return filter, index, records, nil
 }
 
-func (s *SSTable) openReader(path string) (*bytes.Reader, error) {
-	var data []byte
-	var err error
+func (s *SSTable) openReader(path string) (readSeekCloser, error) {
 	if s.blocks != nil {
-		data, err = s.blocks.ReadFile(path)
-	} else {
-		data, err = os.ReadFile(path)
+		return s.blocks.OpenReader(path)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return bytes.NewReader(data), nil
+	return os.Open(path)
 }
 
 func (s *SSTable) writeFile(path string, data []byte) error {

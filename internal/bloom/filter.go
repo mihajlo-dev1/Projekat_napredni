@@ -1,9 +1,11 @@
 package bloom
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"hash/fnv"
+	"io"
 )
 
 type Filter struct {
@@ -48,19 +50,31 @@ func (f *Filter) Serialize() []byte {
 }
 
 func Deserialize(data []byte) (*Filter, error) {
-	if len(data) < 4 {
+	return DeserializeFromReader(bytes.NewReader(data))
+}
+
+func DeserializeFromReader(r io.Reader) (*Filter, error) {
+	var sizeBuf [4]byte
+	if _, err := io.ReadFull(r, sizeBuf[:]); err != nil {
 		return nil, errors.New("bloom: missing size")
 	}
 
-	size := binary.BigEndian.Uint32(data[0:4])
+	size := binary.BigEndian.Uint32(sizeBuf[:])
 	expectedBytes := int((size + 7) / 8)
-	if len(data) != 4+expectedBytes {
+	bitBytes := make([]byte, expectedBytes)
+	if _, err := io.ReadFull(r, bitBytes); err != nil {
+		return nil, errors.New("bloom: invalid data length")
+	}
+
+	var extra [1]byte
+	n, err := r.Read(extra[:])
+	if err != io.EOF || n != 0 {
 		return nil, errors.New("bloom: invalid data length")
 	}
 
 	filter := New(uint(size))
 	for i := uint32(0); i < size; i++ {
-		if data[4+int(i/8)]&(1<<uint(i%8)) != 0 {
+		if bitBytes[int(i/8)]&(1<<uint(i%8)) != 0 {
 			filter.bitset[i] = true
 		}
 	}
