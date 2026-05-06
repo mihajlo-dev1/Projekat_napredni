@@ -179,10 +179,12 @@ func (e *Engine) GetWithError(key string) ([]byte, bool, error) {
 
 func (e *Engine) get(key string) ([]byte, bool) {
 	if value, ok := e.cache.Get(key); ok {
+		fmt.Printf("[read] key=%q source=cache\n", key)
 		return value, true
 	}
 
 	if value, ok := e.memtables.Get(key); ok {
+		fmt.Printf("[read] key=%q source=memtable\n", key)
 		e.cache.Put(key, value)
 		return value, true
 	}
@@ -193,12 +195,15 @@ func (e *Engine) get(key string) ([]byte, bool) {
 			continue
 		}
 		if deleted {
+			fmt.Printf("[read] key=%q source=sstable table=%d tombstone\n", key, i+1)
 			return nil, false
 		}
+		fmt.Printf("[read] key=%q source=sstable table=%d\n", key, i+1)
 		e.cache.Put(key, value)
 		return value, true
 	}
 
+	fmt.Printf("[read] key=%q source=not_found\n", key)
 	return nil, false
 }
 
@@ -286,7 +291,7 @@ func (e *Engine) flushMemtables() error {
 	e.tables = append(e.tables, table)
 	e.nextTableID++
 	e.memtables.Clear()
-	return nil
+	return e.wal.Reset()
 }
 
 func loadSSTables(dir string, summaryStep int, blocks *block.Manager) ([]*sstable.SSTable, int, error) {

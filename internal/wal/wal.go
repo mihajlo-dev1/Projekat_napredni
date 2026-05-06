@@ -148,7 +148,44 @@ func (w *WAL) Close() error {
 	if w.file == nil {
 		return nil
 	}
-	return w.file.Close()
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
+
+func (w *WAL) Reset() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	paths := w.segmentPaths()
+
+	if w.file != nil {
+		if err := w.file.Close(); err != nil {
+			return err
+		}
+		w.file = nil
+	}
+
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	w.currentSegmentIndex = 1
+	w.currentRecordCount = 0
+	w.currentBlockOffset = 0
+	w.currentSegmentBytes = 0
+
+	if w.blocks == nil {
+		file, err := w.openSegment(w.currentSegmentPath())
+		if err != nil {
+			return err
+		}
+		w.file = file
+	}
+
+	return nil
 }
 
 func Open(path string) (*WAL, error) {

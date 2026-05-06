@@ -6,7 +6,7 @@
   },
   "memtable": {
     "implementation": "hashmap",
-    "maxEntries": 1000,
+    "maxEntries": 3,
     "maxSizeKB": 1024,
     "instances": 1
   },
