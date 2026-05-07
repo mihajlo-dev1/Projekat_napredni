@@ -17,6 +17,7 @@ type BTree struct {
 	size    int
 }
 
+// New pravi prazno B-stablo. order odredjuje maksimalan broj dece po cvoru.
 func New(order int) *BTree {
 	if order < 3 {
 		order = 3
@@ -32,12 +33,14 @@ func New(order int) *BTree {
 	}
 }
 
+// Put prvo pokusa update, a ako kljuc ne postoji radi standardni B-tree insert.
 func (t *BTree) Put(key string, value []byte) {
 	if t.update(key, value) {
 		return
 	}
 
 	if len(t.head.keys) == t.maxKeys {
+		// Ako je root pun, pravi se novi root i stari se deli.
 		oldHead := t.head
 		t.head = &Node{
 			children: []*Node{oldHead},
@@ -50,12 +53,14 @@ func (t *BTree) Put(key string, value []byte) {
 	t.size++
 }
 
+// update trazi postojeci kljuc i menja ga bez menjanja strukture stabla.
 func (t *BTree) update(key string, value []byte) bool {
 	current := t.head
 
 	for current != nil {
 		index := findKeyIndex(current.keys, key)
 		if index < len(current.keys) && current.keys[index] == key {
+			// Update ozivljava kljuc ako je bio tombstone.
 			current.values[index] = append([]byte(nil), value...)
 			current.deleted[index] = false
 			return true
@@ -69,10 +74,12 @@ func (t *BTree) update(key string, value []byte) bool {
 	return false
 }
 
+// insertNonFull ubacuje kljuc u cvor za koji znamo da nije pun.
 func (t *BTree) insertNonFull(node *Node, key string, value []byte) {
 	index := findKeyIndex(node.keys, key)
 
 	if node.leaf {
+		// U listu pravimo prazno mesto pa pomeramo vece kljuceve udesno.
 		node.keys = append(node.keys, "")
 		node.values = append(node.values, nil)
 		node.deleted = append(node.deleted, false)
@@ -88,6 +95,7 @@ func (t *BTree) insertNonFull(node *Node, key string, value []byte) {
 	}
 
 	if len(node.children[index].keys) == t.maxKeys {
+		// Pre silaska u puno dete, dete se deli da ubacivanje ima mesta.
 		t.splitChild(node, index)
 		if key > node.keys[index] {
 			index++
@@ -97,10 +105,12 @@ func (t *BTree) insertNonFull(node *Node, key string, value []byte) {
 	t.insertNonFull(node.children[index], key, value)
 }
 
+// splitChild deli puno dete na levo dete, srednji kljuc u parent-u i desno dete.
 func (t *BTree) splitChild(parent *Node, index int) {
 	child := parent.children[index]
 	middle := len(child.keys) / 2
 
+	// Desni cvor dobija sve kljuceve posle sredine.
 	right := &Node{
 		keys:    append([]string(nil), child.keys[middle+1:]...),
 		values:  cloneValues(child.values[middle+1:]),
@@ -109,9 +119,11 @@ func (t *BTree) splitChild(parent *Node, index int) {
 	}
 	if !child.leaf {
 		right.children = append([]*Node(nil), child.children[middle+1:]...)
+		// Levo dete zadrzava samo svoju polovinu dece.
 		child.children = child.children[:middle+1]
 	}
 
+	// Srednji kljuc se penje u parent.
 	middleKey := child.keys[middle]
 	middleValue := append([]byte(nil), child.values[middle]...)
 	middleDeleted := child.deleted[middle]
@@ -125,6 +137,7 @@ func (t *BTree) splitChild(parent *Node, index int) {
 	parent.deleted = append(parent.deleted, false)
 	parent.children = append(parent.children, nil)
 
+	// Parent pravi mesto za srednji kljuc i novo desno dete.
 	copy(parent.keys[index+1:], parent.keys[index:])
 	copy(parent.values[index+1:], parent.values[index:])
 	copy(parent.deleted[index+1:], parent.deleted[index:])
@@ -136,6 +149,7 @@ func (t *BTree) splitChild(parent *Node, index int) {
 	parent.children[index+1] = right
 }
 
+// findKeyIndex vraca prvu poziciju gde key moze da stoji.
 func findKeyIndex(keys []string, key string) int {
 	index := 0
 	for index < len(keys) && keys[index] < key {
@@ -144,6 +158,7 @@ func findKeyIndex(keys []string, key string) int {
 	return index
 }
 
+// cloneValues cuva BTree od toga da pozivalac menja byte slice spolja.
 func cloneValues(values [][]byte) [][]byte {
 	cloned := make([][]byte, len(values))
 	for index, value := range values {
@@ -154,6 +169,7 @@ func cloneValues(values [][]byte) [][]byte {
 	return cloned
 }
 
+// Get trazi kljuc kroz B-stablo.
 func (t *BTree) Get(key string) ([]byte, bool) {
 	current := t.head
 
@@ -161,6 +177,7 @@ func (t *BTree) Get(key string) ([]byte, bool) {
 		index := findKeyIndex(current.keys, key)
 		if index < len(current.keys) && current.keys[index] == key {
 			if current.deleted[index] {
+				// Tombstone znaci da kljuc nije vidljiv.
 				return nil, false
 			}
 			return append([]byte(nil), current.values[index]...), true
@@ -174,6 +191,7 @@ func (t *BTree) Get(key string) ([]byte, bool) {
 	return nil, false
 }
 
+// Delete oznacava kljuc kao tombstone, bez rebalansiranja stabla.
 func (t *BTree) Delete(key string) bool {
 	current := t.head
 
@@ -196,6 +214,7 @@ func (t *BTree) Delete(key string) bool {
 	return false
 }
 
+// Entries vraca sortirane zapise inorder prolaskom.
 func (t *BTree) Entries() []internal.MemtableEntry {
 	entries := make([]internal.MemtableEntry, 0, t.size)
 	collectEntries(t.head, &entries)
@@ -209,6 +228,7 @@ func collectEntries(node *Node, entries *[]internal.MemtableEntry) {
 
 	for index, key := range node.keys {
 		if !node.leaf {
+			// Prvo levo dete, pa kljuc, da rezultat ostane sortiran.
 			collectEntries(node.children[index], entries)
 		}
 

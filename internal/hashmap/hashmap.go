@@ -14,6 +14,7 @@ type Node struct {
 	next    *Node
 }
 
+// HashMap je memtable backend sa bucket-ima i ulanacavanjem kolizija.
 type HashMap struct {
 	buckets []*Node
 	size    int
@@ -25,22 +26,26 @@ func New() *HashMap {
 	}
 }
 
+// bucketIndex racuna u koji bucket ide kljuc.
 func (h *HashMap) bucketIndex(key string) int {
 	hash := uint64(0)
 
 	for i := 0; i < len(key); i++ {
+		// Prosta hash funkcija dovoljna za projektni backend.
 		hash = hash*31 + uint64(key[i])
 	}
 
 	return int(hash % uint64(len(h.buckets)))
 }
 
+// resize duplira broj bucket-a kad load factor postane previsok.
 func (h *HashMap) resize() {
 	oldBuckets := h.buckets
 	h.buckets = make([]*Node, len(oldBuckets)*2)
 
 	for _, bucket := range oldBuckets {
 		for current := bucket; current != nil; current = current.next {
+			// Svaki stari cvor mora ponovo da se rasporedi po novom broju bucket-a.
 			index := h.bucketIndex(current.key)
 			newNode := &Node{
 				key:     current.key,
@@ -62,12 +67,14 @@ func (h *HashMap) resize() {
 	}
 }
 
+// Put ubacuje novu vrednost ili ozivljava obrisan kljuc.
 func (h *HashMap) Put(key string, value []byte) {
 	index := h.bucketIndex(key)
 	current := h.buckets[index]
 
 	for current != nil {
 		if current.key == key {
+			// Update postojeceg kljuca uklanja tombstone ako ga je bilo.
 			current.value = append([]byte(nil), value...)
 			current.deleted = false
 			return
@@ -79,7 +86,8 @@ func (h *HashMap) Put(key string, value []byte) {
 		key:     key,
 		value:   append([]byte(nil), value...),
 		deleted: false,
-		next:    h.buckets[index],
+		// Novi cvor se ubacuje na pocetak lanca u bucket-u.
+		next: h.buckets[index],
 	}
 
 	h.buckets[index] = newNode
@@ -90,6 +98,7 @@ func (h *HashMap) Put(key string, value []byte) {
 	}
 }
 
+// Get vraca kopiju vrednosti da pozivalac ne menja internu memoriju.
 func (h *HashMap) Get(key string) ([]byte, bool) {
 	index := h.bucketIndex(key)
 	current := h.buckets[index]
@@ -107,6 +116,7 @@ func (h *HashMap) Get(key string) ([]byte, bool) {
 	return nil, false
 }
 
+// Delete ne izbacuje cvor, nego ga oznaci kao tombstone.
 func (h *HashMap) Delete(key string) bool {
 	index := h.bucketIndex(key)
 	current := h.buckets[index]
@@ -126,6 +136,7 @@ func (h *HashMap) Delete(key string) bool {
 	return false
 }
 
+// Entries vraca i aktivne zapise i tombstone zapise.
 func (h *HashMap) Entries() []internal.MemtableEntry {
 	entries := make([]internal.MemtableEntry, 0, h.size)
 

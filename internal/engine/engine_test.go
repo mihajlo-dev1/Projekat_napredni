@@ -9,6 +9,7 @@ import (
 )
 
 func testConfig(dir string) config.Config {
+	// Testovi koriste privremene foldere da ne diraju realne data fajlove.
 	cfg := config.Default()
 	cfg.WAL.Directory = filepath.Join(dir, "wal", "segment")
 	cfg.Memtable.Implementation = "hashmap"
@@ -21,6 +22,7 @@ func testConfig(dir string) config.Config {
 	return cfg
 }
 
+// Proverava da se flushovana SSTable vrednost vidi i posle novog Engine-a.
 func TestGetReadsFlushedSSTableAfterReopen(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 
@@ -50,6 +52,7 @@ func TestGetReadsFlushedSSTableAfterReopen(t *testing.T) {
 	}
 }
 
+// Proverava da DELETE u novijoj tabeli sakrije staru vrednost iz starije tabele.
 func TestDeleteTombstoneHidesOlderSSTableValue(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 
@@ -79,6 +82,7 @@ func TestDeleteTombstoneHidesOlderSSTableValue(t *testing.T) {
 	}
 }
 
+// Proverava da tombstone u memtable sakrije vrednost koja je vec na disku.
 func TestMemtableTombstoneHidesOlderSSTableValue(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -111,6 +115,7 @@ func TestMemtableTombstoneHidesOlderSSTableValue(t *testing.T) {
 	}
 }
 
+// Proverava da Start procita sve WAL segmente pre nego sto ih eventualno resetuje.
 func TestStartReplaysAllWALSegmentsBeforeReset(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -121,6 +126,7 @@ func TestStartReplaysAllWALSegmentsBeforeReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	// Namerno pisemo direktno u WAL da simuliramo stanje pre recovery-ja.
 	if err := first.wal.AppendPut([]byte("alpha"), []byte("one")); err != nil {
 		t.Fatalf("AppendPut(alpha) error = %v", err)
 	}
@@ -156,6 +162,7 @@ func TestStartReplaysAllWALSegmentsBeforeReset(t *testing.T) {
 	}
 }
 
+// Proverava da je token bucket sistemski key sakriven i da se stanje obnavlja.
 func TestTokenBucketStateIsHiddenAndRestored(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	cfg.Memtable.MaxEntries = 10
@@ -193,6 +200,7 @@ func TestTokenBucketStateIsHiddenAndRestored(t *testing.T) {
 	}
 }
 
+// Proverava da engine samo prosledi Merkle proveru odgovarajucoj SSTable tabeli.
 func TestValidateMerkleThroughEngine(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 

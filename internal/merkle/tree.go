@@ -10,13 +10,16 @@ import (
 
 const hashSize = sha256.Size
 
+// Tree cuva nivoe Merkle stabla, od listova do root hash-a.
 type Tree struct {
 	levels [][][]byte
 }
 
+// New pravi Merkle stablo od serijalizovanih record-a.
 func New(values [][]byte) *Tree {
 	leaves := make([][]byte, 0, len(values))
 	for _, value := range values {
+		// List nije sama vrednost, nego SHA-256 hash vrednosti.
 		hash := sha256.Sum256(value)
 		leaves = append(leaves, append([]byte(nil), hash[:]...))
 	}
@@ -24,6 +27,7 @@ func New(values [][]byte) *Tree {
 	return newFromLeaves(leaves)
 }
 
+// Root vraca gornji hash celog stabla.
 func (t *Tree) Root() []byte {
 	if t == nil || len(t.levels) == 0 {
 		return nil
@@ -37,6 +41,7 @@ func (t *Tree) Root() []byte {
 	return append([]byte(nil), rootLevel[0]...)
 }
 
+// Validate poredi staro stablo sa novim vrednostima i vraca indekse promenjenih listova.
 func (t *Tree) Validate(values [][]byte) []int {
 	current := New(values)
 	if t == nil || len(t.levels) == 0 {
@@ -60,6 +65,7 @@ func (t *Tree) Validate(values [][]byte) []int {
 	changed := make([]int, 0)
 	for i := 0; i < limit; i++ {
 		if !equalHash(oldLeaves[i], newLeaves[i]) {
+			// Isti indeks, drugaciji hash znaci promenjen data record.
 			changed = append(changed, i)
 		}
 	}
@@ -73,6 +79,7 @@ func (t *Tree) Validate(values [][]byte) []int {
 	return changed
 }
 
+// LeafCount vraca broj data record-a koje metadata ocekuje.
 func (t *Tree) LeafCount() int {
 	if t == nil || len(t.levels) == 0 {
 		return 0
@@ -80,6 +87,7 @@ func (t *Tree) LeafCount() int {
 	return len(t.levels[0])
 }
 
+// MatchesLeaf proverava da li konkretan data record odgovara sacuvanom leaf hash-u.
 func (t *Tree) MatchesLeaf(index int, value []byte) bool {
 	if t == nil || len(t.levels) == 0 || index < 0 || index >= len(t.levels[0]) {
 		return false
@@ -89,6 +97,7 @@ func (t *Tree) MatchesLeaf(index int, value []byte) bool {
 	return equalHash(t.levels[0][index], hash[:])
 }
 
+// Serialize cuva samo listove; ostali nivoi mogu ponovo da se izracunaju.
 func (t *Tree) Serialize() []byte {
 	if t == nil || len(t.levels) == 0 {
 		buf := make([]byte, 4)
@@ -112,6 +121,7 @@ func Deserialize(data []byte) (*Tree, error) {
 	return DeserializeFromReader(bytes.NewReader(data))
 }
 
+// DeserializeFromReader cita leaf hash-eve i obnavlja celo stablo.
 func DeserializeFromReader(r io.Reader) (*Tree, error) {
 	var countBuf [4]byte
 	if _, err := io.ReadFull(r, countBuf[:]); err != nil {
@@ -131,12 +141,14 @@ func DeserializeFromReader(r io.Reader) (*Tree, error) {
 	var extra [1]byte
 	n, err := r.Read(extra[:])
 	if err != io.EOF || n != 0 {
+		// Metadata fajl ne sme imati visak bajtova.
 		return nil, errors.New("merkle: invalid data length")
 	}
 
 	return newFromLeaves(leaves), nil
 }
 
+// newFromLeaves gradi sve nivoe stabla od vec izracunatih leaf hash-eva.
 func newFromLeaves(leaves [][]byte) *Tree {
 	levels := [][][]byte{copyLevel(leaves)}
 	if len(leaves) == 0 {
@@ -153,6 +165,7 @@ func newFromLeaves(leaves [][]byte) *Tree {
 				right = current[i+1]
 			}
 
+			// Roditelj je hash konkatenacije levog i desnog deteta.
 			combined := make([]byte, 0, len(left)+len(right))
 			combined = append(combined, left...)
 			combined = append(combined, right...)
@@ -167,6 +180,7 @@ func newFromLeaves(leaves [][]byte) *Tree {
 	return &Tree{levels: levels}
 }
 
+// copyLevel pravi duboku kopiju jednog nivoa hash-eva.
 func copyLevel(level [][]byte) [][]byte {
 	copied := make([][]byte, 0, len(level))
 	for _, hash := range level {
@@ -175,6 +189,7 @@ func copyLevel(level [][]byte) [][]byte {
 	return copied
 }
 
+// equalHash poredi dva hash-a bez pretvaranja u string.
 func equalHash(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

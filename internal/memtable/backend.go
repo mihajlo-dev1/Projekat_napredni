@@ -7,6 +7,7 @@ import (
 	"kv-engine/internal/skiplist"
 )
 
+// backend je zajednicki interfejs za hashmap, skiplist i btree implementacije.
 type backend interface {
 	Put(key string, value []byte)
 	Get(key string) ([]byte, bool)
@@ -14,6 +15,7 @@ type backend interface {
 	Entries() []internal.MemtableEntry
 }
 
+// newBackend bira strukturu koju je korisnik zadao u konfiguraciji.
 func newBackend(implementation string) (backend, error) {
 	switch implementation {
 	case "", "hashmap":
@@ -27,6 +29,7 @@ func newBackend(implementation string) (backend, error) {
 	}
 }
 
+// resetBackend pravi praznu strukturu istog tipa posle flush-a.
 func resetBackend(implementation string) backend {
 	switch implementation {
 	case "", "hashmap":

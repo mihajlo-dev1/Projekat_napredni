@@ -11,17 +11,23 @@ import (
 )
 
 const (
-	RecordFull   internal.RecordType = 10
-	RecordFirst  internal.RecordType = 11
+	// RecordFull znaci da je ceo WAL record stao u jedan frame.
+	RecordFull internal.RecordType = 10
+	// RecordFirst je prvi fragment velikog record-a.
+	RecordFirst internal.RecordType = 11
+	// RecordMiddle je srednji fragment velikog record-a.
 	RecordMiddle internal.RecordType = 12
-	RecordLast   internal.RecordType = 13
+	// RecordLast je poslednji fragment velikog record-a.
+	RecordLast internal.RecordType = 13
 )
 
+// frame je fizicki komad podataka u WAL bloku.
 type frame struct {
 	fragmentType internal.RecordType
 	data         []byte
 }
 
+// frameReader pamti poziciju unutar bloka dok cita frame-ove.
 type frameReader struct {
 	r           io.Reader
 	blockOffset int
@@ -33,10 +39,12 @@ func newFrameReader(r io.Reader, blockSize int) *frameReader {
 	return &frameReader{r: r, blockSize: blockSize}
 }
 
+// SerializeRecord pakuje logicki WAL record u binarni format sa CRC proverom.
 func SerializeRecord(record *internal.Record) []byte {
 	keySize := uint32(len(record.Key))
 	valueSize := uint32(len(record.Value))
 
+	// Format: type, timestamp, ttl, keySize, valueSize, key, value, crc.
 	size := 1 + 8 + 8 + 4 + 4 + keySize + valueSize
 	buf := make([]byte, size+4)
 
@@ -63,12 +71,14 @@ func SerializeRecord(record *internal.Record) []byte {
 	copy(buf[offset:], record.Value)
 	offset += int(valueSize)
 
+	// CRC pokriva sve osim samog CRC polja.
 	crc := crc32.ChecksumIEEE(buf[:offset])
 	binary.BigEndian.PutUint32(buf[offset:], crc)
 
 	return buf
 }
 
+// DeserializeRecord cita binarni record i proverava CRC.
 func DeserializeRecord(data []byte) (*internal.Record, error) {
 	if len(data) < 29 {
 		return nil, io.ErrUnexpectedEOF
@@ -96,6 +106,7 @@ func DeserializeRecord(data []byte) (*internal.Record, error) {
 	expectedCRC := binary.BigEndian.Uint32(data[valueEnd:totalSize])
 	actualCRC := crc32.ChecksumIEEE(data[:valueEnd])
 	if actualCRC != expectedCRC {
+		// Ako CRC ne odgovara, record je ostecen ili nije kompletno upisan.
 		return nil, errors.New("wal: crc mismatch")
 	}
 
@@ -111,6 +122,7 @@ func DeserializeRecord(data []byte) (*internal.Record, error) {
 	}, nil
 }
 
+// ReadRecord cita record bez frame fragmentacije.
 func ReadRecord(r io.Reader) (*internal.Record, error) {
 	var header [25]byte
 
@@ -160,6 +172,7 @@ func ReadRecord(r io.Reader) (*internal.Record, error) {
 	}, nil
 }
 
+// writeFrame upisuje jedan WAL frame: tip fragmenta, duzina, pa data.
 func writeFrame(w io.Writer, fragmentType internal.RecordType, data []byte) (int, error) {
 	var header [frameHeaderSize]byte
 	header[0] = byte(fragmentType)
@@ -175,6 +188,7 @@ func writeFrame(w io.Writer, fragmentType internal.RecordType, data []byte) (int
 	return frameHeaderSize + len(data), nil
 }
 
+// ReadNextRecord cita frame-ove dok ne dobije kompletan logicki record.
 func ReadNextRecord(r *frameReader) (*internal.Record, error) {
 	var assembled []byte
 	inFragmentedRecord := false
@@ -183,6 +197,7 @@ func ReadNextRecord(r *frameReader) (*internal.Record, error) {
 		f, err := readFrame(r)
 		if err != nil {
 			if err == io.EOF && len(assembled) > 0 {
+				// Kraj fajla usred fragmentisanog record-a znaci ostecen WAL.
 				return nil, io.ErrUnexpectedEOF
 			}
 			return nil, err
@@ -190,6 +205,7 @@ func ReadNextRecord(r *frameReader) (*internal.Record, error) {
 
 		switch f.fragmentType {
 		case RecordFull:
+			// Najcesci slucaj: ceo record je u jednom frame-u.
 			if inFragmentedRecord {
 				return nil, errors.New("wal: full fragment inside fragmented record")
 			}
@@ -201,6 +217,7 @@ func ReadNextRecord(r *frameReader) (*internal.Record, error) {
 			assembled = append(assembled[:0], f.data...)
 			inFragmentedRecord = true
 		case RecordMiddle:
+			// Srednji fragment samo nastavlja prethodno skupljene bajtove.
 			if !inFragmentedRecord {
 				return nil, errors.New("wal: middle fragment without first fragment")
 			}
@@ -210,6 +227,7 @@ func ReadNextRecord(r *frameReader) (*internal.Record, error) {
 				return nil, errors.New("wal: last fragment without first fragment")
 			}
 			assembled = append(assembled, f.data...)
+			// Tek na LAST fragmentu se radi DeserializeRecord.
 			return DeserializeRecord(assembled)
 		default:
 			return nil, fmt.Errorf("wal: unknown fragment type %d", f.fragmentType)
@@ -217,9 +235,11 @@ func ReadNextRecord(r *frameReader) (*internal.Record, error) {
 	}
 }
 
+// readFrame cita jedan frame i preskace padding na kraju bloka.
 func readFrame(r *frameReader) (frame, error) {
 	for {
 		if remaining := r.blockSize - r.blockOffset; remaining < frameHeaderSize && remaining != r.blockSize {
+			// Premalo mesta za header, ostatak bloka je padding.
 			padding := make([]byte, remaining)
 			if _, err := io.ReadFull(r.r, padding); err != nil {
 				return frame{}, err
@@ -248,11 +268,13 @@ func readFrame(r *frameReader) (frame, error) {
 			return frame{}, fmt.Errorf("wal: invalid frame length %d", length)
 		}
 		if length == 0 && fragmentType == 0 {
+			// Nula header oznacava prazan deo fiksnog segmenta.
 			r.blockOffset = headerBlockOffset
 			r.bytesRead = headerBytesRead
 			return frame{}, io.EOF
 		}
 		if length > r.blockSize-r.blockOffset {
+			// Frame ne sme da predje granicu bloka.
 			return frame{}, fmt.Errorf("wal: frame crosses block boundary")
 		}
 

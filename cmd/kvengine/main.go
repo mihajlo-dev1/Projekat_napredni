@@ -12,6 +12,7 @@ import (
 )
 
 func main() {
+	// Ako korisnik ne prosledi putanju, koristi se podrazumevani config.
 	configPath := "config.json"
 	if len(os.Args) > 1 {
 		configPath = os.Args[1]
@@ -35,6 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Jednostavan REPL za rucno testiranje engine-a.
 	fmt.Println("KV Engine CLI started")
 	fmt.Println("Commands: PUT key value | GET key | DELETE key | MERKLE tableNumber | TABLES | EXIT")
 
@@ -69,6 +71,7 @@ func shouldExit(line string) bool {
 	return command == "EXIT" || command == "QUIT"
 }
 
+// execute parsira jednu CLI komandu i poziva odgovarajucu engine metodu.
 func execute(kv *engine.Engine, line string) error {
 	parts := strings.Fields(line)
 	if len(parts) == 0 {
@@ -81,6 +84,7 @@ func execute(kv *engine.Engine, line string) error {
 			return errors.New("usage: PUT key value")
 		}
 		key := parts[1]
+		// Vrednost se uzima iz originalne linije da bi smela da sadrzi razmake.
 		valueStart := strings.Index(line, key) + len(key)
 		value := strings.TrimSpace(line[valueStart:])
 		if value == "" {
@@ -140,6 +144,7 @@ func execute(kv *engine.Engine, line string) error {
 	return nil
 }
 
+// parsePositiveInt je mali parser za MERKLE broj tabele.
 func parsePositiveInt(value string) (int, error) {
 	number := 0
 	for _, ch := range value {

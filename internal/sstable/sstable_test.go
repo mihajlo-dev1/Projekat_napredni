@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// Proverava da Create napravi svih 5 SSTable komponenti i tacan sadrzaj.
 func TestCreateWritesAllComponents(t *testing.T) {
 	dir := t.TempDir()
 	entries := map[string][]byte{
@@ -122,6 +123,7 @@ func TestCreateWritesAllComponents(t *testing.T) {
 	}
 }
 
+// Proverava lookup putanju: filter -> summary -> index -> data.
 func TestGetReadsThroughSSTableComponents(t *testing.T) {
 	dir := t.TempDir()
 	table, _, _, err := Create(dir, map[string][]byte{
@@ -151,6 +153,7 @@ func TestGetReadsThroughSSTableComponents(t *testing.T) {
 	}
 }
 
+// Proverava da Merkle metadata detektuje rucno izmenjen data.bin record.
 func TestValidateMerkleDetectsChangedDataRecord(t *testing.T) {
 	dir := t.TempDir()
 	entries := map[string][]byte{
@@ -172,6 +175,7 @@ func TestValidateMerkleDetectsChangedDataRecord(t *testing.T) {
 		t.Fatalf("ValidateMerkle() = (%v, %v), want (true, nil)", valid, changed)
 	}
 
+	// Menjamo jedan bajt value dela drugog record-a.
 	valueOffset := index[1].Offset + int64(9+len(index[1].Key))
 	file, err := os.OpenFile(table.DataPath, os.O_WRONLY, 0644)
 	if err != nil {
@@ -197,6 +201,7 @@ func TestValidateMerkleDetectsChangedDataRecord(t *testing.T) {
 	}
 }
 
+// readIndexFile cita sve index entry-je iz fajla za potrebe testa.
 func readIndexFile(path string) ([]IndexEntry, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -217,6 +222,7 @@ func readIndexFile(path string) ([]IndexEntry, error) {
 	}
 }
 
+// readSummaryEntries cita summary entry-je posle vec procitanih bounds-a.
 func readSummaryEntries(r io.Reader) ([]SumaryEntry, error) {
 	entries := make([]SumaryEntry, 0)
 	for {

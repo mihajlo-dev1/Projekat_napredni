@@ -12,6 +12,7 @@ import (
 var ErrInvalidBlockSize = errors.New("block manager: supported block sizes are 4KB, 8KB, or 16KB")
 var ErrBlockTooLarge = errors.New("block manager: data is larger than block size")
 
+// Manager cita i pise fajlove po fiksnim blokovima.
 type Manager struct {
 	blockSize int
 	cache     *blockcache.Cache
@@ -23,6 +24,7 @@ type Reader interface {
 	io.Closer
 }
 
+// fileReader je reader koji ispod koristi Manager i njegov block cache.
 type fileReader struct {
 	manager *Manager
 	path    string
@@ -32,6 +34,7 @@ type fileReader struct {
 	index   uint64
 }
 
+// New prima velicinu u KB, a interno radi sa bajtovima.
 func New(blockSizeKB int, cache *blockcache.Cache) *Manager {
 	return &Manager{
 		blockSize: blockSizeKB * 1024,
@@ -43,6 +46,7 @@ func (m *Manager) BlockSize() int {
 	return m.blockSize
 }
 
+// ReadBlock cita tacno jedan pun blok.
 func (m *Manager) ReadBlock(path string, index uint64) ([]byte, error) {
 	if err := m.validateBlockSize(); err != nil {
 		return nil, err
@@ -50,10 +54,12 @@ func (m *Manager) ReadBlock(path string, index uint64) ([]byte, error) {
 
 	if m.cache != nil {
 		if data, ok := m.cache.Get(path, index); ok {
+			// Cache hit: ne idemo do diska.
 			return data, nil
 		}
 	}
 
+	// Indeks bloka se prevodi u byte offset u fajlu.
 	offset, err := m.blockOffset(index)
 	if err != nil {
 		return nil, err
@@ -71,12 +77,14 @@ func (m *Manager) ReadBlock(path string, index uint64) ([]byte, error) {
 	}
 
 	if m.cache != nil {
+		// Procitani blok se pamti za sledeci read.
 		m.cache.Put(path, index, data)
 	}
 
 	return data, nil
 }
 
+// WriteBlock upisuje jedan blok; kraci data se dopunjava nulama.
 func (m *Manager) WriteBlock(path string, index uint64, data []byte) error {
 	if err := m.validateBlockSize(); err != nil {
 		return err
@@ -92,6 +100,7 @@ func (m *Manager) WriteBlock(path string, index uint64, data []byte) error {
 	}
 
 	block := make([]byte, m.blockSize)
+	// Fajl na disku uvek dobija ceo blok.
 	copy(block, data)
 
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
@@ -105,12 +114,14 @@ func (m *Manager) WriteBlock(path string, index uint64, data []byte) error {
 	}
 
 	if m.cache != nil {
+		// Cache mora da vidi novu verziju bloka.
 		m.cache.Put(path, index, block)
 	}
 
 	return nil
 }
 
+// ReadFile cita ceo fajl preko blokova.
 func (m *Manager) ReadFile(path string) ([]byte, error) {
 	if err := m.validateBlockSize(); err != nil {
 		return nil, err
@@ -128,6 +139,7 @@ func (m *Manager) ReadFile(path string) ([]byte, error) {
 	data := make([]byte, 0, blockCount*uint64(m.blockSize))
 
 	for index := uint64(0); index < blockCount; index++ {
+		// Poslednji blok sme biti kraci od blockSize.
 		block, err := m.readBlockAllowPartial(path, index)
 		if err != nil {
 			return nil, err
@@ -135,9 +147,11 @@ func (m *Manager) ReadFile(path string) ([]byte, error) {
 		data = append(data, block...)
 	}
 
+	// Vraca se tacna velicina fajla, bez padding nula iz poslednjeg bloka.
 	return data[:info.Size()], nil
 }
 
+// OpenReader daje sekvencijalni reader preko block manager-a.
 func (m *Manager) OpenReader(path string) (Reader, error) {
 	if err := m.validateBlockSize(); err != nil {
 		return nil, err
@@ -155,6 +169,7 @@ func (m *Manager) OpenReader(path string) (Reader, error) {
 	}, nil
 }
 
+// EnsureFileSize pravi fajl i postavlja mu tacnu velicinu.
 func (m *Manager) EnsureFileSize(path string, size int64) error {
 	if err := m.validateBlockSize(); err != nil {
 		return err
@@ -180,6 +195,7 @@ func (m *Manager) EnsureFileSize(path string, size int64) error {
 	if m.cache != nil {
 		blockCount := uint64((size + int64(m.blockSize) - 1) / int64(m.blockSize))
 		for index := uint64(0); index < blockCount; index++ {
+			// Posle truncate-a stari blokovi u cache-u nisu pouzdani.
 			m.cache.Delete(path, index)
 		}
 	}
@@ -187,6 +203,7 @@ func (m *Manager) EnsureFileSize(path string, size int64) error {
 	return nil
 }
 
+// WriteAt upisuje proizvoljan niz bajtova na proizvoljan offset.
 func (m *Manager) WriteAt(path string, offset int64, data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -211,6 +228,7 @@ func (m *Manager) WriteAt(path string, offset int64, data []byte) error {
 
 		blockData := make([]byte, m.blockSize)
 		if blockOffset != 0 || chunkSize != m.blockSize {
+			// Za delimican upis prvo citamo stari blok da ne pregazimo ostatak.
 			existing, err := m.readBlockAllowPartial(path, blockIndex)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
@@ -218,6 +236,7 @@ func (m *Manager) WriteAt(path string, offset int64, data []byte) error {
 			copy(blockData, existing)
 		}
 
+		// Upisujemo samo deo data koji staje u trenutni blok.
 		copy(blockData[blockOffset:], data[:chunkSize])
 		if err := m.WriteBlock(path, blockIndex, blockData); err != nil {
 			return err
@@ -230,6 +249,7 @@ func (m *Manager) WriteAt(path string, offset int64, data []byte) error {
 	return nil
 }
 
+// Read cita iz fajla preko blokova i postuje trenutni offset reader-a.
 func (r *fileReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -242,6 +262,7 @@ func (r *fileReader) Read(p []byte) (int, error) {
 	for len(p) > 0 && r.offset < r.size {
 		blockIndex := uint64(r.offset / int64(r.manager.blockSize))
 		if r.block == nil || r.index != blockIndex {
+			// Cita se novi blok samo kad predjemo granicu trenutnog bloka.
 			block, err := r.manager.readBlockAllowPartial(r.path, blockIndex)
 			if err != nil {
 				if total > 0 {
@@ -257,6 +278,7 @@ func (r *fileReader) Read(p []byte) (int, error) {
 		remainingInBlock := len(r.block) - blockOffset
 		remainingInFile := int(r.size - r.offset)
 		if remainingInBlock > remainingInFile {
+			// Ne citamo padding posle kraja stvarnog fajla.
 			remainingInBlock = remainingInFile
 		}
 		if remainingInBlock <= 0 {
@@ -275,6 +297,7 @@ func (r *fileReader) Read(p []byte) (int, error) {
 	return total, nil
 }
 
+// Seek pomera offset reader-a kao standardni os.File Seek.
 func (r *fileReader) Seek(offset int64, whence int) (int64, error) {
 	var next int64
 
@@ -293,6 +316,7 @@ func (r *fileReader) Seek(offset int64, whence int) (int64, error) {
 		return 0, fmt.Errorf("block manager: negative seek offset %d", next)
 	}
 	if next > r.size {
+		// Reader ne ide dalje od kraja fajla.
 		next = r.size
 	}
 
@@ -304,6 +328,7 @@ func (r *fileReader) Close() error {
 	return nil
 }
 
+// WriteFile prepisuje ceo fajl datim podacima.
 func (m *Manager) WriteFile(path string, data []byte) error {
 	if err := m.validateBlockSize(); err != nil {
 		return err
@@ -331,6 +356,7 @@ func (m *Manager) WriteFile(path string, data []byte) error {
 	}
 
 	for offset, index := 0, uint64(0); offset < len(data); offset, index = offset+m.blockSize, index+1 {
+		// Data se sece na blokove i upisuje redom.
 		end := offset + m.blockSize
 		if end > len(data) {
 			end = len(data)
@@ -343,6 +369,7 @@ func (m *Manager) WriteFile(path string, data []byte) error {
 	return os.Truncate(path, int64(len(data)))
 }
 
+// AppendFile cita postojece podatke, doda nove i prepise fajl.
 func (m *Manager) AppendFile(path string, data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -364,6 +391,7 @@ func (m *Manager) AppendFile(path string, data []byte) error {
 	return m.WriteFile(path, existing)
 }
 
+// readBlockAllowPartial cita blok, ali tolerise EOF kod poslednjeg kraceg bloka.
 func (m *Manager) readBlockAllowPartial(path string, index uint64) ([]byte, error) {
 	if m.cache != nil {
 		if data, ok := m.cache.Get(path, index); ok {
@@ -392,12 +420,14 @@ func (m *Manager) readBlockAllowPartial(path string, index uint64) ([]byte, erro
 	if m.cache != nil {
 		block := make([]byte, m.blockSize)
 		copy(block, data)
+		// U cache-u se drzi blok fiksne velicine.
 		m.cache.Put(path, index, block)
 	}
 
 	return data, nil
 }
 
+// validateBlockSize ogranicava projekat na trazene velicine blokova.
 func (m *Manager) validateBlockSize() error {
 	switch m.blockSize {
 	case 4 * 1024, 8 * 1024, 16 * 1024:
@@ -407,6 +437,7 @@ func (m *Manager) validateBlockSize() error {
 	}
 }
 
+// blockOffset prevodi indeks bloka u offset bajtova, uz overflow proveru.
 func (m *Manager) blockOffset(index uint64) (int64, error) {
 	const maxInt64 = uint64(1<<63 - 1)
 
@@ -418,6 +449,7 @@ func (m *Manager) blockOffset(index uint64) (int64, error) {
 	return int64(index * blockSize), nil
 }
 
+// filepathDir je mala lokalna zamena za filepath.Dir.
 func filepathDir(path string) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		if path[i] == os.PathSeparator {

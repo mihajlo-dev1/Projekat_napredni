@@ -6,6 +6,7 @@ import (
 	"kv-engine/internal"
 )
 
+// MemtableManager drzi jednu ili vise memtable instanci.
 type MemtableManager struct {
 	tables         []*Memtable
 	implementation string
@@ -13,6 +14,7 @@ type MemtableManager struct {
 	maxInstances   int
 }
 
+// NewMemtableManager pravi prvu aktivnu memtable.
 func NewMemtableManager(implementation string, maxEntries int, maxInstances int) (*MemtableManager, error) {
 	if maxInstances < 1 {
 		maxInstances = 1
@@ -31,7 +33,9 @@ func NewMemtableManager(implementation string, maxEntries int, maxInstances int)
 	}, nil
 }
 
+// Put upisuje u najnoviju memtable i vraca true kad engine treba da flushuje.
 func (m *MemtableManager) Put(key string, value []byte) bool {
+	// Upis uvek ide u poslednju, aktivnu memtable.
 	active := m.tables[len(m.tables)-1]
 	active.Put(key, value)
 
@@ -40,16 +44,18 @@ func (m *MemtableManager) Put(key string, value []byte) bool {
 	}
 
 	if len(m.tables) >= m.maxInstances {
-		// All allowed memtable instances are full, so the caller should flush them.
+		// Sve dozvoljene instance su pune, engine treba da flushuje.
 		return true
 	}
 
+	// Ako aktivna jeste puna, ali ima mesta za jos jednu instancu, otvaramo novu.
 	newTable, _ := NewWithBackend(m.implementation, m.maxEntries)
 	m.tables = append(m.tables, newTable)
 
 	return false
 }
 
+// Get cita od najnovije ka najstarijoj memtable, zbog prepisivanja vrednosti.
 func (m *MemtableManager) Get(key string) ([]byte, bool) {
 	for i := len(m.tables) - 1; i >= 0; i-- {
 		value, found := m.tables[i].Get(key)
@@ -57,6 +63,7 @@ func (m *MemtableManager) Get(key string) ([]byte, bool) {
 			return value, true
 		}
 
+		// Ako novija memtable ima tombstone, starije verzije se ne gledaju.
 		if m.tables[i].IsDeleted(key) {
 			return nil, false
 		}
@@ -65,6 +72,7 @@ func (m *MemtableManager) Get(key string) ([]byte, bool) {
 	return nil, false
 }
 
+// IsDeleted trazi najnoviji tombstone za kljuc.
 func (m *MemtableManager) IsDeleted(key string) bool {
 	for i := len(m.tables) - 1; i >= 0; i-- {
 		if _, found := m.tables[i].Get(key); found {
@@ -78,10 +86,12 @@ func (m *MemtableManager) IsDeleted(key string) bool {
 	return false
 }
 
+// Delete upisuje tombstone cak i ako kljuc trenutno nije u aktivnoj memtable.
 func (m *MemtableManager) Delete(key string) bool {
 	active := m.tables[len(m.tables)-1]
 	deleted := active.Delete(key)
 	if !deleted {
+		// Ako key ne postoji u aktivnoj memtable, pravimo novi tombstone zapis.
 		active.Put(key, nil)
 		active.Delete(key)
 	}
@@ -91,7 +101,7 @@ func (m *MemtableManager) Delete(key string) bool {
 	}
 
 	if len(m.tables) >= m.maxInstances {
-		// All allowed memtable instances are full, so the caller should flush them.
+		// Sve dozvoljene instance su pune, engine treba da flushuje.
 		return true
 	}
 
@@ -101,6 +111,7 @@ func (m *MemtableManager) Delete(key string) bool {
 	return false
 }
 
+// Entries spaja memtable instance i zadrzava samo najnoviju verziju kljuca.
 func (m *MemtableManager) Entries() []internal.MemtableEntry {
 	totalSize := 0
 	for _, table := range m.tables {
@@ -114,6 +125,7 @@ func (m *MemtableManager) Entries() []internal.MemtableEntry {
 			exists := false
 			for _, existing := range entries {
 				if existing.Key == entry.Key {
+					// Vec smo uzeli noviju verziju istog kljuca.
 					exists = true
 					break
 				}
@@ -132,6 +144,7 @@ func (m *MemtableManager) Entries() []internal.MemtableEntry {
 	return entries
 }
 
+// Clear brise sve instance i pravi novu praznu aktivnu memtable.
 func (m *MemtableManager) Clear() {
 	table, _ := NewWithBackend(m.implementation, m.maxEntries)
 	m.tables = []*Memtable{table}

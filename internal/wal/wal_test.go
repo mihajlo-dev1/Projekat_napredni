@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// Proverava da recordsPerSegment=1 rotira segment posle svakog zapisa.
 func TestOpenConfiguredUsesRecordsPerSegment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal", "segment")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -17,6 +18,7 @@ func TestOpenConfiguredUsesRecordsPerSegment(t *testing.T) {
 		t.Fatalf("OpenConfigured() error = %v", err)
 	}
 
+	// Dva PUT-a treba da zavrse u dva razlicita WAL segmenta.
 	if err := w.AppendPut([]byte("a"), []byte("one")); err != nil {
 		t.Fatalf("AppendPut(a) error = %v", err)
 	}
@@ -35,6 +37,7 @@ func TestOpenConfiguredUsesRecordsPerSegment(t *testing.T) {
 	}
 }
 
+// Proverava da su WAL segmenti uvek fiksne velicine iz config-a.
 func TestOpenConfiguredCreatesFixedLengthSegments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal", "segment")
 	blockSize := 4 * 1024

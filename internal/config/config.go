@@ -48,6 +48,7 @@ type TokenBucketConfig struct {
 	RefillIntervalSeconds int `json:"refillIntervalSeconds"`
 }
 
+// Default daje vrednosti koje se koriste ako config fajl ne pregazi polja.
 func Default() Config {
 	return Config{
 		WAL: WALConfig{
@@ -80,7 +81,9 @@ func Default() Config {
 	}
 }
 
+// Load ucitava JSON config preko default vrednosti i validira rezultat.
 func Load(path string) (Config, error) {
+	// Krece se od default-a, pa JSON pregazi samo polja koja postoje u fajlu.
 	cfg := Default()
 
 	data, err := os.ReadFile(path)
@@ -92,6 +95,7 @@ func Load(path string) (Config, error) {
 		return cfg, fmt.Errorf("decode config: %w", err)
 	}
 
+	// Validacija hvata lose config vrednosti pre nego sto engine krene.
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
@@ -99,7 +103,9 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// Validate proverava da engine ne krene sa neupotrebljivim podesavanjima.
 func (c Config) Validate() error {
+	// WAL mora imati gde da cuva segmente.
 	if c.WAL.Directory == "" {
 		return fmt.Errorf("wal.directory must not be empty")
 	}
@@ -113,6 +119,7 @@ func (c Config) Validate() error {
 	switch c.Memtable.Implementation {
 	case "hashmap", "skiplist", "btree":
 	default:
+		// Backend mora biti jedan od implementiranih tipova.
 		return fmt.Errorf("memtable.implementation must be hashmap, skiplist, or btree")
 	}
 	if c.Memtable.MaxEntries < 1 {
@@ -139,6 +146,7 @@ func (c Config) Validate() error {
 	switch c.BlockManager.BlockSizeKB {
 	case 4, 8, 16:
 	default:
+		// Projekat podrzava samo ove velicine blokova.
 		return fmt.Errorf("blockManager.blockSizeKB must be 4, 8, or 16")
 	}
 	if c.BlockManager.CacheCapacity < 0 {
