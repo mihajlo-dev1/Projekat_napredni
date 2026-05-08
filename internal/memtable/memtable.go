@@ -14,7 +14,6 @@ type Memtable struct {
 	maxEntries  int
 }
 
-// inicijalizacija prazne memtable
 func New(maxEntries int) *Memtable {
 	memtable, err := NewWithBackend("hashmap", maxEntries)
 	if err != nil {

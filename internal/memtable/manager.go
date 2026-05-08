@@ -40,7 +40,6 @@ func (m *MemtableManager) Put(key string, value []byte) bool {
 	}
 
 	if len(m.tables) >= m.maxInstances {
-		// All allowed memtable instances are full, so the caller should flush them.
 		return true
 	}
 
@@ -91,7 +90,6 @@ func (m *MemtableManager) Delete(key string) bool {
 	}
 
 	if len(m.tables) >= m.maxInstances {
-		// All allowed memtable instances are full, so the caller should flush them.
 		return true
 	}
 
