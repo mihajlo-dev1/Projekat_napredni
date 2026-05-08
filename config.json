@@ -1,0 +1,29 @@
+{
+  "wal": {
+    "directory": "data/wal",
+    "segmentSizeBlocks": 16,
+    "recordsPerSegment": 1000
+  },
+  "memtable": {
+    "implementation": "hashmap",
+    "maxEntries": 3,
+    "maxSizeKB": 1024,
+    "instances": 2
+  },
+  "sstable": {
+    "directory": "data/sstable",
+    "summaryStep": 5,
+    "singleFile": false
+  },
+  "cache": {
+    "capacity": 128
+  },
+  "blockManager": {
+    "blockSizeKB": 4,
+    "cacheCapacity": 64
+  },
+  "tokenBucket": {
+    "capacity": 10,
+    "refillIntervalSeconds": 60
+  }
+}
